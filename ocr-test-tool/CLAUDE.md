@@ -14,16 +14,17 @@ for the Pi project context.
 
 ```bash
 npm install    # first time only — installs Electron
-npm start      # launches the app
+npm start      # launches the app (runs electron . --no-sandbox)
 ```
 
 Requires Node.js. No other dependencies.
 
-**Linux display resolution changing** requires an **X11 session** (not Wayland). On Ubuntu
-22.04+, select "Ubuntu on Xorg" at the GDM login screen. The app uses `xrandr` to change
-the monitor resolution before opening the display window and restores it automatically
-afterwards. On Wayland, the resolution dropdown still populates but the `xrandr` change
-is silently skipped — the window opens at native resolution.
+**Must run in an X11 session** (not Wayland). On Ubuntu 22.04+, select "Ubuntu on Xorg" at the
+GDM login screen. On Wayland, `$DISPLAY` is not set and Electron will not start.
+
+**Display resolution** is not changed by the app. Before running a test, manually set the HDMI
+monitor (display_index) to the resolution matching `scene.width × scene.height` in the test
+case. If the resolution doesn't match, the test will fail immediately with a clear error.
 
 ---
 
@@ -35,15 +36,20 @@ ocr-test-tool/
 ├── preload.js           # Context bridge — exposes window.api to all renderer windows
 ├── renderer/
 │   ├── index.html       # Main window UI
-│   ├── renderer.js      # Main window logic
+│   ├── renderer.js      # Main window logic — single test + suite runner
 │   └── styles.css       # Shared styles
 ├── editor/
 │   ├── editor.html      # Test case editor window
 │   └── editor.js        # Editor logic — canvas preview, region property panel
 ├── display/
-│   └── display.html     # Fullscreen scene renderer (opens on capture monitor)
+│   ├── display.html     # Fullscreen scene renderer (opens on capture monitor)
+│   └── display.js       # Scene rendering logic (external file, required by CSP)
 └── test-cases/
-    └── example.json     # Example test case with 3 OCR scenarios
+    ├── example.json     # Example test case with 3 OCR scenarios
+    └── 2K/              # 10 pre-built 2K (2560×1440) test cases
+        ├── 01-single-dark-currency.json
+        ├── 02-single-white-on-black.json
+        └── ...
 ```
 
 ---
@@ -52,16 +58,22 @@ ocr-test-tool/
 
 **Three windows, all using the same `preload.js`:**
 
-1. **Main window** (`renderer/`) — load test cases, check Pi status, run tests, view results
+1. **Main window** (`renderer/`) — load test cases, check Pi status, run single test or suite
 2. **Editor window** (`editor/`) — build and edit test case JSON with a live canvas preview
 3. **Display window** (`display/`) — frameless, fullscreen, renders the scene to `<canvas>`
 
 **IPC rule:** All Pi HTTP calls and file I/O happen in `main.js` (main process). Renderer
-windows only send/receive data — they never do networking or disk access directly. This avoids
-CORS issues and keeps renderer code simple.
+windows only send/receive data — they never do networking or disk access directly.
 
 **`preload.js` exposes `window.api`** to all windows via `contextBridge`. Any new IPC channel
 needs a handler in both `main.js` (ipcMain.handle/on) and `preload.js` (contextBridge).
+
+**CSP note:** `display.html` and `editor.html` have a strict Content Security Policy that blocks
+inline scripts. All JavaScript must live in external `.js` files (e.g. `display.js`, `editor.js`).
+
+**Scene data flow:** `main.js` stores the pending test case in `pendingSceneData` before opening
+the display window. The display window calls `window.api.getSceneData()` on `DOMContentLoaded`
+to pull it — no push/timing race.
 
 ---
 
@@ -70,7 +82,7 @@ needs a handler in both `main.js` (ipcMain.handle/on) and `preload.js` (contextB
 ```json
 {
   "name":          "Jackpot Display — Dark Background",
-  "pi_ip":         "192.168.1.50",
+  "pi_ip":         "192.168.1.166",
   "pi_port":       8080,
   "display_index": 1,
   "settle_ms":     1000,
@@ -110,32 +122,31 @@ to the Pi. 1000ms is usually enough for the HDMI signal to stabilise.
 
 ---
 
-## Display Resolution Flow
-
-When a test runs or a preview is opened:
-
-1. `main.js` reads `testCase.scene.width/height` (default 1920×1080)
-2. Calls `xrandr --query` to find the output name for `display_index` and its available modes
-3. If the requested resolution differs from current and is available, runs
-   `xrandr --output <name> --mode <WxH>` and waits 300ms for the mode change to settle
-4. Opens the display window fullscreen at the new bounds
-5. `display.html` canvas renders at scene resolution, with regions scaled up from capture space
-6. On display window close, `main.js` restores the original resolution via xrandr
-
----
-
 ## Test Flow (run-test IPC)
 
 1. `renderer.js` calls `window.api.runTest(testCase)` → `main.js ipcMain.handle('run-test')`
-2. `main.js` sets display resolution via xrandr if needed, opens display window
-3. `display.html` renders scene to canvas (scaling regions from 1920×1080 capture space),
-   calls `window.api.signalReady()`
-4. `main.js` receives `display-ready` signal, waits `settle_ms`
-5. `main.js` POSTs to `http://{pi_ip}:{pi_port}/ocr` with region list (no expected values)
-6. Pi captures HDMI feed at 1920×1080, OCRs each region using the original crop coords
-7. `main.js` closes display window (xrandr restores resolution), attaches expected values,
-   computes pass/fail
-8. Returns result to `renderer.js` which renders the results table
+2. `main.js` checks display resolution via `xrandr --query` — returns error immediately if
+   `display_index` resolution ≠ `scene.width × scene.height`
+3. `main.js` opens the display window fullscreen on `display_index`
+4. `display.js` pulls scene data via `getSceneData()`, renders canvas, calls `signalReady()`
+5. `main.js` receives `display-ready` signal, waits `settle_ms`
+6. `main.js` POSTs to `http://{pi_ip}:{pi_port}/ocr` with region list (no expected values)
+7. Pi captures HDMI feed at 1920×1080, OCRs each region using the original crop coords
+8. `main.js` closes display window, attaches expected values, computes pass/fail
+9. Returns result to `renderer.js` which renders the results table
+
+---
+
+## Suite Runner
+
+The **Run Suite** button opens a folder picker. All `.json` files in the chosen folder are run
+in alphabetical order, looping continuously until the user clicks **■ Stop** or a test fails.
+
+- Each file gets a PASS/FAIL row in the suite panel with failure detail if OCR doesn't match
+- A divider row marks the end of each complete pass through the folder
+- On failure the suite stops immediately and shows which region failed and what was expected vs got
+- `test-cases/2K/` contains 10 pre-built cases covering 1–5 regions, varied contrast, and
+  scale2x/scale3x options
 
 ---
 
@@ -171,28 +182,13 @@ for networking.
 
 ---
 
-## Editor Canvas
-
-- Region coordinates are always in **1920×1080 capture space** — the coordinate system of
-  the MS2130 output image, regardless of scene resolution
-- The editor canvas is scaled down to fit the window (scale factor ~0.5)
-- Drawing uses `coord * scale`; click-to-select converts back: `clickCoord / scale`
-- `display.html` renders the canvas at the full scene resolution (`scene.width × scene.height`)
-  and scales all region coordinates by `(scene_w/1920, scene_h/1080)` before drawing
-- The "Scene Size" dropdown in the editor is populated from `xrandr` available modes (up to 4K)
-
----
-
 ## OCR Options Reference
 
-These come from the Pi's preprocessing pipeline — `options` in the region definition maps
-directly to ImageMagick flags applied before Tesseract:
-
-| Option   | Effect                          | When to use                         |
-| -------- | ------------------------------- | ------------------------------------ |
+| Option   | Effect                          | When to use                            |
+| -------- | ------------------------------- | -------------------------------------- |
 | `invert` | Negate image before threshold   | White or light text on dark background |
-| `scale2x`| Resize to 200% before OCR       | Small text (font size < ~40px)      |
-| `scale3x`| Resize to 300% before OCR       | Very small text                     |
+| `scale2x`| Resize to 200% before OCR       | Small text (font size < ~40px)         |
+| `scale3x`| Resize to 300% before OCR       | Very small text                        |
 
 `whitelist`: restrict Tesseract to specific characters, e.g. `"0123456789.$"` for currency.
 `shave`: trim N pixels from all edges of the cropped region, e.g. `"5x5"`. Use `"0x0"` to skip.
@@ -205,5 +201,6 @@ directly to ImageMagick flags applied before Tesseract:
    expose it via `preload.js`
 2. If it's UI-only — add it directly in the renderer HTML/JS file for that window
 3. If it adds a new property to the test case JSON — update the editor property panel
-   (`editor.js`), the display renderer (`display.html`), and the `run-test` IPC handler
+   (`editor.js`), the display renderer (`display.js`), and the `run-test` IPC handler
    in `main.js` where crop geometry is derived
+4. Never put `<script>` blocks inline in HTML files — the CSP will block them
