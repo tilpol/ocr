@@ -3,10 +3,12 @@ const { contextBridge, ipcRenderer } = require('electron')
 
 contextBridge.exposeInMainWorld('api', {
   // ── File operations ──────────────────────────────────────────────────────
-  openFileDialog:  ()                    => ipcRenderer.invoke('open-file-dialog'),
-  saveFileDialog:  (defaultName)         => ipcRenderer.invoke('save-file-dialog', defaultName),
-  readFile:        (filePath)            => ipcRenderer.invoke('read-file', filePath),
-  writeFile:       (filePath, content)   => ipcRenderer.invoke('write-file', filePath, content),
+  openFileDialog:   ()                   => ipcRenderer.invoke('open-file-dialog'),
+  openFolderDialog: ()                   => ipcRenderer.invoke('open-folder-dialog'),
+  saveFileDialog:   (defaultName)        => ipcRenderer.invoke('save-file-dialog', defaultName),
+  readFile:         (filePath)           => ipcRenderer.invoke('read-file', filePath),
+  writeFile:        (filePath, content)  => ipcRenderer.invoke('write-file', filePath, content),
+  listTestCases:    (dirPath)            => ipcRenderer.invoke('list-test-cases', dirPath),
 
   // ── Pi communication ─────────────────────────────────────────────────────
   checkPiStatus:   (ip, port)            => ipcRenderer.invoke('check-pi-status', ip, port),

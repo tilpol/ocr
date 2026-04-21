@@ -258,6 +258,21 @@ function sleep(ms) {
 
 // ─── IPC — file operations ────────────────────────────────────────────────────
 
+ipcMain.handle('open-folder-dialog', async () => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title:      'Select Test Suite Folder',
+    properties: ['openDirectory'],
+  })
+  return result.canceled ? null : result.filePaths[0]
+})
+
+ipcMain.handle('list-test-cases', async (_, dirPath) => {
+  return fs.readdirSync(dirPath)
+    .filter(f => f.endsWith('.json'))
+    .sort()
+    .map(f => path.join(dirPath, f))
+})
+
 ipcMain.handle('open-file-dialog', async () => {
   const result = await dialog.showOpenDialog(mainWindow, {
     title:       'Open Test Case',

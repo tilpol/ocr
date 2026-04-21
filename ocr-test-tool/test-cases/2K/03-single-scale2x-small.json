@@ -1,0 +1,23 @@
+{
+  "name": "2K Single — Small Text scale2x",
+  "pi_ip": "192.168.1.166",
+  "pi_port": 8080,
+  "display_index": 1,
+  "settle_ms": 1000,
+  "scene": { "width": 2560, "height": 1440, "background": "#2d3448" },
+  "regions": [
+    {
+      "label": "Credits",
+      "x": 810, "y": 510,
+      "w": 300, "h": 60,
+      "bg_color": "#f0f0f0",
+      "text": "1250",
+      "text_color": "#111111",
+      "font_size": 32,
+      "font_family": "monospace",
+      "shave": "0x0",
+      "whitelist": "0123456789",
+      "options": ["scale2x"]
+    }
+  ]
+}

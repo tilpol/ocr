@@ -1,0 +1,23 @@
+{
+  "name": "2K Single — Dark Currency",
+  "pi_ip": "192.168.1.166",
+  "pi_port": 8080,
+  "display_index": 1,
+  "settle_ms": 1000,
+  "scene": { "width": 2560, "height": 1440, "background": "#1a1a2e" },
+  "regions": [
+    {
+      "label": "Price",
+      "x": 760, "y": 490,
+      "w": 400, "h": 100,
+      "bg_color": "#ffffff",
+      "text": "$50.00",
+      "text_color": "#000000",
+      "font_size": 60,
+      "font_family": "monospace",
+      "shave": "0x0",
+      "whitelist": "0123456789.$",
+      "options": []
+    }
+  ]
+}

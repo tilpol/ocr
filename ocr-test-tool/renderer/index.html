@@ -46,9 +46,20 @@
         <span id="stream-status-text">Stream — unknown</span>
       </div>
       <button class="btn btn-secondary" id="btn-check-pi">Check Pi</button>
+      <button class="btn btn-secondary" id="btn-run-suite">Run Suite</button>
       <div class="toolbar-spacer"></div>
       <button class="btn btn-secondary" id="btn-preview">Preview Display</button>
       <button class="btn btn-run" id="btn-run" disabled>Run Test ▶</button>
+      <button class="btn btn-stop" id="btn-stop-suite" style="display:none">■ Stop</button>
+    </div>
+
+    <!-- Suite progress panel -->
+    <div class="suite-panel" id="suite-panel" style="display:none">
+      <div class="suite-progress-header">
+        <span id="suite-status-text">Running suite…</span>
+        <span id="suite-pass-count" class="suite-pass-count"></span>
+      </div>
+      <div class="suite-file-list" id="suite-file-list"></div>
     </div>
 
     <!-- Results area -->
