@@ -11,10 +11,7 @@ let editorWindow    = null
 let displayWindow   = null
 let pendingSceneData = null
 
-// ─── xrandr — display resolution management ───────────────────────────────────
-
-// Map of outputName → original mode string ('1920x1080'), saved before any change
-const savedResolutions = new Map()
+// ─── xrandr — display resolution query ───────────────────────────────────────
 
 // Parse `xrandr --query` output.
 // Returns [{ displayIndex, outputName, currentMode, modes: [{w,h}] }]
@@ -70,27 +67,6 @@ function getXrandrInfo() {
   return results
 }
 
-function setXrandrResolution(outputName, currentMode, w, h) {
-  if (!savedResolutions.has(outputName)) {
-    savedResolutions.set(outputName, currentMode)
-  }
-  try {
-    execSync(`xrandr --output ${outputName} --mode ${w}x${h}`)
-  } catch (err) {
-    console.error(`xrandr set failed: ${err.message}`)
-  }
-}
-
-function restoreXrandrResolution(outputName) {
-  const saved = savedResolutions.get(outputName)
-  if (!saved) return
-  savedResolutions.delete(outputName)
-  try {
-    execSync(`xrandr --output ${outputName} --mode ${saved}`)
-  } catch (err) {
-    console.error(`xrandr restore failed: ${err.message}`)
-  }
-}
 
 // ─── App lifecycle ────────────────────────────────────────────────────────────
 
@@ -154,28 +130,6 @@ function createDisplayWindow(testCase) {
   pendingSceneData = testCase
 
   const displayIdx = testCase.display_index ?? 0
-  const sceneW     = (testCase.scene || {}).width  || 1920
-  const sceneH     = (testCase.scene || {}).height || 1080
-
-  // Attempt to set the target display to the requested resolution via xrandr.
-  // This is a no-op if xrandr is unavailable (Wayland / non-Linux).
-  let xrandrOutput = null
-  const xrandrInfo = getXrandrInfo()
-  const xrandrEntry = xrandrInfo.find(e => e.displayIndex === displayIdx)
-  if (xrandrEntry) {
-    xrandrOutput = xrandrEntry.outputName
-    const [cw, ch] = xrandrEntry.currentMode.split('x').map(Number)
-    if (cw !== sceneW || ch !== sceneH) {
-      // Only change if the mode is actually available
-      if (xrandrEntry.modes.some(m => m.w === sceneW && m.h === sceneH)) {
-        setXrandrResolution(xrandrOutput, xrandrEntry.currentMode, sceneW, sceneH)
-        // Give the display server time to apply the mode change
-        execSync('sleep 0.3')
-      }
-    }
-  }
-
-  // Re-query displays after possible resolution change
   const displays   = screen.getAllDisplays()
   const targetDisp = displays[displayIdx] || displays[displays.length - 1]
   const { x, y, width, height } = targetDisp.bounds
@@ -193,8 +147,6 @@ function createDisplayWindow(testCase) {
   })
   displayWindow.loadFile(path.join(__dirname, 'display', 'display.html'))
   displayWindow.on('closed', () => {
-    // Restore display resolution if we changed it
-    if (xrandrOutput) restoreXrandrResolution(xrandrOutput)
     displayWindow    = null
     pendingSceneData = null
   })
@@ -313,7 +265,23 @@ ipcMain.handle('check-pi-status', async (_, ip, port) => {
 // ─── IPC — run test ───────────────────────────────────────────────────────────
 
 ipcMain.handle('run-test', async (_, testCase) => {
-  // 1. Open display window and wait for it to signal ready
+  // 1. Check display resolution matches the scene — fail fast if not
+  const displayIdx = testCase.display_index ?? 0
+  const sceneW     = (testCase.scene || {}).width  || 1920
+  const sceneH     = (testCase.scene || {}).height || 1080
+  const xrandrInfo = getXrandrInfo()
+  const xrandrEntry = xrandrInfo.find(e => e.displayIndex === displayIdx)
+  if (xrandrEntry) {
+    const [cw, ch] = xrandrEntry.currentMode.split('x').map(Number)
+    if (cw !== sceneW || ch !== sceneH) {
+      return {
+        success: false,
+        error: `Display ${displayIdx} is ${cw}×${ch} but test scene requires ${sceneW}×${sceneH} — please set the display to the correct resolution`,
+      }
+    }
+  }
+
+  // 2. Open display window and wait for it to signal ready
   const dispWin = createDisplayWindow(testCase)
 
   const displayReady = new Promise((resolve, reject) => {
