@@ -23,9 +23,7 @@
       "font_family": "monospace",
       "shave": "0x0",
       "whitelist": "",
-      "options": [
-        "invert"
-      ]
+      "options": []
     }
   ]
 }
