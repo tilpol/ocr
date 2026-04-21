@@ -19,10 +19,12 @@ contextBridge.exposeInMainWorld('api', {
   previewDisplay:   (testCase)           => ipcRenderer.invoke('preview-display', testCase),
 
   // ── Display window (used by display.html only) ───────────────────────────
-  onSceneData:     (cb) => ipcRenderer.on('scene-data',    (_, d) => cb(d)),
+  getSceneData:    ()   => ipcRenderer.invoke('get-scene-data'),
+  closeDisplay:    ()   => ipcRenderer.invoke('close-display'),
   signalReady:     ()   => ipcRenderer.send('display-ready'),
 
   // ── Editor ↔ main-window sync ────────────────────────────────────────────
+  onSceneData:       (cb) => ipcRenderer.on('scene-data',       (_, d) => cb(d)),
   notifyEditorSaved: (testCase) => ipcRenderer.send('editor-saved-to-main', testCase),
   onTestCaseLoaded:  (cb) => ipcRenderer.on('test-case-loaded', (_, d) => cb(d)),
   onEditorSaved:     (cb) => ipcRenderer.on('editor-saved',     (_, d) => cb(d)),

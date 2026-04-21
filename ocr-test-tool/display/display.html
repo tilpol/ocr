@@ -40,75 +40,24 @@
       display:     none;
       z-index:     999;
     }
+
+    #esc-hint {
+      position:    fixed;
+      bottom:      10px;
+      right:       14px;
+      color:       rgba(255,255,255,.35);
+      font-family: monospace;
+      font-size:   12px;
+      pointer-events: none;
+    }
   </style>
 </head>
 <body>
 
 <div id="warn"></div>
 <canvas id="display-canvas"></canvas>
+<div id="esc-hint">Esc to close</div>
 
-<script>
-'use strict'
-
-// Capture resolution — OCR crop coordinates are always in this space
-const CAPTURE_W = 1920
-const CAPTURE_H = 1080
-
-const canvas = document.getElementById('display-canvas')
-const ctx    = canvas.getContext('2d')
-const warn   = document.getElementById('warn')
-
-function renderScene(testCase) {
-  const sc = testCase.scene || {}
-  const w  = sc.width  || CAPTURE_W
-  const h  = sc.height || CAPTURE_H
-
-  canvas.width  = w
-  canvas.height = h
-
-  // Scale factors: region coordinates are in 1920×1080 capture space;
-  // scale up to scene resolution so the MS2130 sees the right pixels after downsampling.
-  const scaleX = w / CAPTURE_W
-  const scaleY = h / CAPTURE_H
-
-  // Scene background
-  ctx.fillStyle = sc.background || '#000000'
-  ctx.fillRect(0, 0, w, h)
-
-  for (const r of (testCase.regions || [])) {
-    const rx = r.x * scaleX
-    const ry = r.y * scaleY
-    const rw = r.w * scaleX
-    const rh = r.h * scaleY
-
-    // Region background
-    ctx.fillStyle = r.bg_color || '#ffffff'
-    ctx.fillRect(rx, ry, rw, rh)
-
-    // Text centered in region — scale font proportionally
-    const fs = (r.font_size || 48) * Math.min(scaleX, scaleY)
-    ctx.font         = `${fs}px ${r.font_family || 'monospace'}`
-    ctx.textAlign    = 'center'
-    ctx.textBaseline = 'middle'
-    ctx.fillStyle    = r.text_color || '#000000'
-    ctx.fillText(r.text || '', rx + rw / 2, ry + rh / 2)
-  }
-
-  // Warn if physical display resolution doesn't match scene
-  const sw = window.screen.width
-  const sh = window.screen.height
-  if (sw !== w || sh !== h) {
-    warn.textContent = `Warning: screen ${sw}×${sh} ≠ scene ${w}×${h} — crop coords may be offset`
-    warn.style.display = 'block'
-  }
-}
-
-// Receive scene data from main process
-window.api.onSceneData((testCase) => {
-  renderScene(testCase)
-  // Signal to main that the scene is rendered and the test can proceed
-  window.api.signalReady()
-})
-</script>
+<script src="display.js"></script>
 </body>
 </html>

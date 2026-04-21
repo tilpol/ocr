@@ -6,9 +6,10 @@ const http            = require('http')
 const { execSync }    = require('child_process')
 
 // ─── Window references ────────────────────────────────────────────────────────
-let mainWindow    = null
-let editorWindow  = null
-let displayWindow = null
+let mainWindow      = null
+let editorWindow    = null
+let displayWindow   = null
+let pendingSceneData = null
 
 // ─── xrandr — display resolution management ───────────────────────────────────
 
@@ -150,6 +151,8 @@ function createEditorWindow(testCase) {
 function createDisplayWindow(testCase) {
   if (displayWindow) displayWindow.close()
 
+  pendingSceneData = testCase
+
   const displayIdx = testCase.display_index ?? 0
   const sceneW     = (testCase.scene || {}).width  || 1920
   const sceneH     = (testCase.scene || {}).height || 1080
@@ -189,13 +192,11 @@ function createDisplayWindow(testCase) {
     },
   })
   displayWindow.loadFile(path.join(__dirname, 'display', 'display.html'))
-  displayWindow.webContents.on('did-finish-load', () => {
-    displayWindow.webContents.send('scene-data', testCase)
-  })
   displayWindow.on('closed', () => {
     // Restore display resolution if we changed it
     if (xrandrOutput) restoreXrandrResolution(xrandrOutput)
-    displayWindow = null
+    displayWindow    = null
+    pendingSceneData = null
   })
   return displayWindow
 }
@@ -386,6 +387,12 @@ ipcMain.handle('get-display-modes', () => getXrandrInfo())
 
 ipcMain.handle('preview-display', (_, testCase) => {
   createDisplayWindow(testCase)
+})
+
+ipcMain.handle('get-scene-data', () => pendingSceneData)
+
+ipcMain.handle('close-display', () => {
+  if (displayWindow) displayWindow.close()
 })
 
 // ─── IPC — editor saved ───────────────────────────────────────────────────────
