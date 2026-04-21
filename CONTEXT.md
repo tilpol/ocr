@@ -139,11 +139,20 @@ The expected field is only used for setup validation and testing.
 ~/ocr/
 ├── stream.sh          # Main script — capture, stream, benchmark, loop-test, validate
 ├── ocr.sh             # Standalone OCR script — reads config, outputs label: value pairs
+├── pi_server.py       # HTTP server — receives test commands, returns OCR results as JSON
 ├── CONTEXT.md         # This file
 ├── test_regions.conf  # Test config WITH expected values (for validation testing only)
 ├── configs/
 │   └── machine1.conf  # Per-machine region config (no expected values in production)
-└── logs/              # Loop test logs — auto-created, named loop_test_YYYYMMDD_HHMMSS.log
+├── logs/              # Loop test logs — auto-created, named loop_test_YYYYMMDD_HHMMSS.log
+└── ocr-test-tool/     # Electron app — runs on Windows test host
+    ├── package.json
+    ├── main.js         # Electron main process, IPC, HTTP client
+    ├── preload.js      # Context bridge
+    ├── renderer/       # Main UI (load test, run test, results table)
+    ├── editor/         # Test case editor with live scene preview
+    ├── display/        # Fullscreen scene renderer (shown on capture monitor via HDMI)
+    └── test-cases/     # JSON test case definitions
 ```
 
 ---

@@ -79,7 +79,7 @@ ocr_region() {
   fi
 
   # Clean up result
-  result=$(echo "$result" | tr -d '\f' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+  result=$(echo "$result" | tr -d '\f' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//;s/,,*/,/g')
 
   printf "%-20s: %s\n" "$label" "$result"
 }

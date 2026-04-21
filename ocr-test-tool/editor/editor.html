@@ -1,0 +1,495 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; style-src 'self' 'unsafe-inline'">
+  <title>Test Case Editor</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:      #f4f5f7;
+      --panel:   #ffffff;
+      --border:  #dde1e7;
+      --text:    #1a1d23;
+      --muted:   #6b7280;
+      --accent:  #2563eb;
+      --hl:      rgba(37,99,235,.18);
+      --radius:  6px;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      font-size: 13px;
+      color: var(--text);
+      background: var(--bg);
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    /* ── Top toolbar ──────────────────────────────────────────────────────── */
+    .top-bar {
+      display:       flex;
+      align-items:   center;
+      gap:           8px;
+      padding:       8px 14px;
+      background:    var(--panel);
+      border-bottom: 1px solid var(--border);
+      flex-shrink:   0;
+    }
+    .top-bar h2 { font-size: 14px; font-weight: 600; flex: 1; }
+    .btn {
+      padding: 6px 13px; font-size: 12px; font-weight: 500; border-radius: var(--radius);
+      border: 1px solid transparent; cursor: pointer; transition: background .12s;
+    }
+    .btn-primary  { background: var(--accent); color: #fff; border-color: #1d4ed8; }
+    .btn-primary:hover { background: #1d4ed8; }
+    .btn-secondary { background: #f1f5f9; color: var(--text); border-color: var(--border); }
+    .btn-secondary:hover { background: #e2e8f0; }
+    .btn-danger { background: #fee2e2; color: #dc2626; border-color: #fca5a5; }
+    .btn-danger:hover { background: #fecaca; }
+    .btn-sm { padding: 4px 9px; font-size: 11px; }
+
+    /* ── Main 3-column layout ─────────────────────────────────────────────── */
+    .editor-layout {
+      display: flex;
+      flex: 1;
+      overflow: hidden;
+      gap: 1px;
+      background: var(--border);
+    }
+
+    /* ── Column 1: canvas preview ─────────────────────────────────────────── */
+    .col-preview {
+      flex: 1;
+      background: #0d0d14;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      min-width: 0;
+    }
+
+    .preview-header {
+      padding: 6px 10px;
+      font-size: 11px;
+      color: #7b8aa0;
+      background: #1a1a2a;
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .preview-header span { flex: 1; }
+
+    .canvas-wrap {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+      padding: 8px;
+    }
+
+    #preview-canvas {
+      max-width:  100%;
+      max-height: 100%;
+      cursor:     crosshair;
+      display:    block;
+      image-rendering: crisp-edges;
+    }
+
+    /* ── Column 2: region list ────────────────────────────────────────────── */
+    .col-regions {
+      width: 200px;
+      flex-shrink: 0;
+      background: var(--panel);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .col-header {
+      padding:       8px 10px;
+      font-size:     11px;
+      font-weight:   600;
+      text-transform: uppercase;
+      letter-spacing: .5px;
+      color:         var(--muted);
+      border-bottom: 1px solid var(--border);
+      flex-shrink:   0;
+      display:       flex;
+      align-items:   center;
+    }
+    .col-header span { flex: 1; }
+
+    .region-list {
+      flex:      1;
+      overflow-y: auto;
+      padding:   6px;
+    }
+
+    .region-item {
+      padding:       7px 9px;
+      border-radius: var(--radius);
+      cursor:        pointer;
+      margin-bottom: 3px;
+      border:        1px solid transparent;
+      transition:    background .1s;
+    }
+    .region-item:hover { background: #f1f5f9; }
+    .region-item.selected { background: var(--hl); border-color: var(--accent); }
+
+    .region-item .ri-label {
+      font-size:   12px;
+      font-weight: 500;
+      white-space: nowrap;
+      overflow:    hidden;
+      text-overflow: ellipsis;
+    }
+
+    .region-item .ri-text {
+      font-size:   11px;
+      color:       var(--muted);
+      font-family: monospace;
+      white-space: nowrap;
+      overflow:    hidden;
+      text-overflow: ellipsis;
+      margin-top: 2px;
+    }
+
+    .region-item .ri-pos {
+      font-size: 10px;
+      color: #94a3b8;
+      margin-top: 2px;
+    }
+
+    .region-list-footer {
+      padding: 8px 6px;
+      border-top: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+
+    /* ── Column 3: properties ─────────────────────────────────────────────── */
+    .col-props {
+      width:          300px;
+      flex-shrink:    0;
+      background:     var(--panel);
+      display:        flex;
+      flex-direction: column;
+      overflow:       hidden;
+    }
+
+    .props-scroll {
+      flex:      1;
+      overflow-y: auto;
+      padding:   12px;
+    }
+
+    .props-empty {
+      color: var(--muted);
+      font-size: 12px;
+      padding: 20px;
+      text-align: center;
+    }
+
+    .prop-section {
+      margin-bottom: 16px;
+    }
+
+    .prop-section-title {
+      font-size:     10px;
+      font-weight:   700;
+      text-transform: uppercase;
+      letter-spacing: .6px;
+      color:         var(--muted);
+      margin-bottom: 8px;
+      padding-bottom: 4px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .prop-row {
+      display:       flex;
+      align-items:   center;
+      margin-bottom: 7px;
+      gap:           6px;
+    }
+
+    .prop-label {
+      font-size: 12px;
+      color:     var(--muted);
+      width:     72px;
+      flex-shrink: 0;
+    }
+
+    .prop-row input[type="text"],
+    .prop-row input[type="number"],
+    .prop-row select {
+      flex:          1;
+      padding:       4px 7px;
+      font-size:     12px;
+      border:        1px solid var(--border);
+      border-radius: 4px;
+      background:    var(--bg);
+      color:         var(--text);
+      outline:       none;
+    }
+    .prop-row input:focus, .prop-row select:focus {
+      border-color: var(--accent);
+    }
+
+    .prop-row input[type="color"] {
+      width:  36px;
+      height: 28px;
+      padding: 2px;
+      border:  1px solid var(--border);
+      border-radius: 4px;
+      cursor:  pointer;
+    }
+
+    .prop-row-4 {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr 1fr;
+      gap: 4px;
+      margin-bottom: 7px;
+    }
+    .prop-row-4 input {
+      padding:       4px 5px;
+      font-size:     12px;
+      border:        1px solid var(--border);
+      border-radius: 4px;
+      background:    var(--bg);
+      color:         var(--text);
+      text-align:    center;
+      outline:       none;
+    }
+    .prop-row-4 input:focus { border-color: var(--accent); }
+
+    .prop-coords-labels {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr 1fr;
+      gap: 4px;
+      margin-bottom: 2px;
+    }
+    .coord-label {
+      font-size: 10px;
+      color: var(--muted);
+      text-align: center;
+    }
+
+    .options-grid {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+
+    .opt-chip {
+      display:       flex;
+      align-items:   center;
+      gap:           4px;
+      padding:       3px 8px;
+      border-radius: 12px;
+      border:        1px solid var(--border);
+      font-size:     11px;
+      cursor:        pointer;
+      background:    var(--bg);
+      user-select:   none;
+      transition:    background .1s;
+    }
+    .opt-chip.active {
+      background:  #dbeafe;
+      border-color: var(--accent);
+      color:        #1d4ed8;
+      font-weight:  600;
+    }
+    .opt-chip input { display: none; }
+
+    /* ── Scene settings footer ────────────────────────────────────────────── */
+    .scene-settings {
+      padding:    10px 12px;
+      border-top: 1px solid var(--border);
+      flex-shrink: 0;
+      background: #f8fafc;
+    }
+
+    .scene-settings .prop-section-title { margin-bottom: 6px; }
+
+    .region-delete {
+      margin-top: 8px;
+      width: 100%;
+    }
+  </style>
+</head>
+<body>
+
+<!-- Top toolbar -->
+<div class="top-bar">
+  <h2 id="editor-title">Test Case Editor</h2>
+  <button class="btn btn-secondary" id="btn-preview-fs">Preview Fullscreen</button>
+  <button class="btn btn-primary"   id="btn-save">Save Test Case</button>
+</div>
+
+<!-- 3-column layout -->
+<div class="editor-layout">
+
+  <!-- Column 1: canvas preview -->
+  <div class="col-preview">
+    <div class="preview-header">
+      <span id="canvas-info">Scene preview (1920×1080)</span>
+    </div>
+    <div class="canvas-wrap">
+      <canvas id="preview-canvas"></canvas>
+    </div>
+  </div>
+
+  <!-- Column 2: region list -->
+  <div class="col-regions">
+    <div class="col-header">
+      <span>Regions</span>
+    </div>
+    <div class="region-list" id="region-list"></div>
+    <div class="region-list-footer">
+      <button class="btn btn-secondary" id="btn-add-region" style="width:100%">+ Add Region</button>
+    </div>
+  </div>
+
+  <!-- Column 3: properties -->
+  <div class="col-props">
+    <div class="col-header">
+      <span>Properties</span>
+    </div>
+    <div class="props-scroll" id="props-scroll">
+      <div class="props-empty" id="props-empty">Select a region to edit its properties.</div>
+
+      <!-- Region properties (hidden until a region is selected) -->
+      <div id="region-props" style="display:none">
+
+        <div class="prop-section">
+          <div class="prop-section-title">Region</div>
+          <div class="prop-row">
+            <span class="prop-label">Label</span>
+            <input type="text" id="p-label" placeholder="Region name">
+          </div>
+          <div class="prop-row">
+            <span class="prop-label">Text</span>
+            <input type="text" id="p-text" placeholder="$7,500.00">
+          </div>
+        </div>
+
+        <div class="prop-section">
+          <div class="prop-section-title">Position &amp; Size (capture coords, 1920×1080)</div>
+          <div class="prop-coords-labels">
+            <div class="coord-label">X</div>
+            <div class="coord-label">Y</div>
+            <div class="coord-label">W</div>
+            <div class="coord-label">H</div>
+          </div>
+          <div class="prop-row-4">
+            <input type="number" id="p-x" min="0" max="1920">
+            <input type="number" id="p-y" min="0" max="1080">
+            <input type="number" id="p-w" min="10" max="1920">
+            <input type="number" id="p-h" min="10" max="1080">
+          </div>
+        </div>
+
+        <div class="prop-section">
+          <div class="prop-section-title">Appearance</div>
+          <div class="prop-row">
+            <span class="prop-label">Background</span>
+            <input type="color" id="p-bg">
+            <input type="text"  id="p-bg-hex" placeholder="#000000" style="width:80px;flex:none">
+          </div>
+          <div class="prop-row">
+            <span class="prop-label">Text color</span>
+            <input type="color" id="p-fg">
+            <input type="text"  id="p-fg-hex" placeholder="#ffffff" style="width:80px;flex:none">
+          </div>
+          <div class="prop-row">
+            <span class="prop-label">Font size</span>
+            <input type="number" id="p-fontsize" min="8" max="200" style="width:60px;flex:none">
+            <span style="font-size:12px;color:var(--muted)">px</span>
+          </div>
+          <div class="prop-row">
+            <span class="prop-label">Font</span>
+            <select id="p-font">
+              <option value="monospace">Monospace</option>
+              <option value="sans-serif">Sans-serif</option>
+              <option value="serif">Serif</option>
+              <option value="'Courier New', monospace">Courier New</option>
+              <option value="'Arial', sans-serif">Arial</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="prop-section">
+          <div class="prop-section-title">OCR Options</div>
+          <div class="options-grid">
+            <label class="opt-chip" id="chip-invert">
+              <input type="checkbox" id="p-invert"> invert
+            </label>
+            <label class="opt-chip" id="chip-scale2x">
+              <input type="checkbox" id="p-scale2x"> scale2x
+            </label>
+            <label class="opt-chip" id="chip-scale3x">
+              <input type="checkbox" id="p-scale3x"> scale3x
+            </label>
+          </div>
+          <div class="prop-row" style="margin-top:8px">
+            <span class="prop-label">Whitelist</span>
+            <input type="text" id="p-whitelist" placeholder="0123456789.$">
+          </div>
+          <div class="prop-row">
+            <span class="prop-label">Shave</span>
+            <input type="text" id="p-shave" placeholder="0x0" style="width:70px;flex:none">
+          </div>
+        </div>
+
+        <button class="btn btn-danger btn-sm region-delete" id="btn-delete-region">
+          Delete Region
+        </button>
+      </div>
+    </div><!-- /.props-scroll -->
+
+    <!-- Scene-level settings at bottom -->
+    <div class="scene-settings">
+      <div class="prop-section-title">Scene &amp; Connection</div>
+      <div class="prop-row">
+        <span class="prop-label">Name</span>
+        <input type="text" id="s-name" placeholder="Test case name">
+      </div>
+      <div class="prop-row">
+        <span class="prop-label">Background</span>
+        <input type="color" id="s-bg">
+        <input type="text" id="s-bg-hex" placeholder="#1a1a2e" style="width:75px;flex:none">
+      </div>
+      <div class="prop-row">
+        <span class="prop-label">Scene Size</span>
+        <select id="s-resolution" style="flex:1">
+          <option value="1920x1080">1920×1080</option>
+        </select>
+      </div>
+      <div class="prop-row">
+        <span class="prop-label">Pi IP</span>
+        <input type="text" id="s-pi-ip" placeholder="192.168.1.50">
+      </div>
+      <div class="prop-row">
+        <span class="prop-label">Pi Port</span>
+        <input type="number" id="s-pi-port" value="8080" style="width:70px;flex:none">
+        <span class="prop-label" style="width:auto">Display</span>
+        <input type="number" id="s-display" value="1" min="0" max="8" style="width:40px;flex:none">
+      </div>
+      <div class="prop-row">
+        <span class="prop-label">Settle ms</span>
+        <input type="number" id="s-settle" value="1000" min="100" max="10000" style="width:70px;flex:none">
+      </div>
+    </div>
+  </div><!-- /.col-props -->
+
+</div><!-- /.editor-layout -->
+
+<script src="editor.js"></script>
+</body>
+</html>

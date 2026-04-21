@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; style-src 'self' 'unsafe-inline'">
+  <title>OCR Test Tool</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<div class="app-layout">
+
+  <!-- ── Sidebar ──────────────────────────────────────────────────────────── -->
+  <aside class="sidebar">
+    <div class="sidebar-header">
+      <h1>OCR Test Tool</h1>
+      <p>Pi HDMI capture validation</p>
+    </div>
+
+    <div class="sidebar-actions">
+      <button class="btn-sidebar" id="btn-load">Load</button>
+      <button class="btn-sidebar" id="btn-new">New</button>
+      <button class="btn-sidebar" id="btn-edit" disabled>Edit</button>
+    </div>
+
+    <div class="test-case-panel" id="test-case-panel">
+      <p class="test-case-empty">
+        Load or create a test case<br>to get started.
+      </p>
+    </div>
+  </aside>
+
+  <!-- ── Main content ─────────────────────────────────────────────────────── -->
+  <div class="main-content">
+
+    <!-- Toolbar -->
+    <div class="toolbar">
+      <div id="pi-status" class="status-badge">
+        <span class="status-dot" id="pi-dot"></span>
+        <span id="pi-status-text">Pi — not connected</span>
+      </div>
+      <div id="stream-status" class="status-badge">
+        <span class="status-dot" id="stream-dot"></span>
+        <span id="stream-status-text">Stream — unknown</span>
+      </div>
+      <button class="btn btn-secondary" id="btn-check-pi">Check Pi</button>
+      <div class="toolbar-spacer"></div>
+      <button class="btn btn-secondary" id="btn-preview">Preview Display</button>
+      <button class="btn btn-run" id="btn-run" disabled>Run Test ▶</button>
+    </div>
+
+    <!-- Results area -->
+    <div class="results-area" id="results-area">
+      <div class="results-placeholder" id="placeholder">
+        <div class="icon">⬡</div>
+        <div>Load a test case and click <strong>Run Test</strong></div>
+      </div>
+    </div>
+
+    <!-- Status bar -->
+    <div class="status-bar">
+      <span class="log-msg" id="log-msg">Ready</span>
+      <span class="timing" id="timing"></span>
+    </div>
+
+  </div><!-- /.main-content -->
+</div><!-- /.app-layout -->
+
+<script src="renderer.js"></script>
+</body>
+</html>

@@ -556,7 +556,7 @@ loop_test() {
         ocr_result=$(tesseract /tmp/loop_ocr.png stdout --psm 7 2>/dev/null)
       fi
       ocr_result=$(printf '%s' "$ocr_result" | tr -d '\014\015' | \
-        sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        sed 's/^[[:space:]]*//;s/[[:space:]]*$//;s/,,*/,/g')
 
       # Compare
       local st
@@ -622,6 +622,199 @@ loop_test() {
   rm -f "$output" /tmp/loop_ocr.png
 }
 
+# ─── Loop: capture + OCR, print values only (no pass/fail) ──
+read_loop() {
+  local method=${1:-ondemand}
+  local config=${2:-test_regions.conf}
+  local interval=${3:-5}
+  local max_iterations=${4:-0}
+  local output=/tmp/loop_capture.png
+  local log_file="loop_test_$(date +%Y%m%d_%H%M%S).log"
+
+  case "$method" in
+    60fps|5fps|mjpeg|nice|ondemand) ;;
+    *)
+      error "Unknown method: $method — valid: 60fps 5fps mjpeg nice ondemand"
+      exit 1 ;;
+  esac
+
+  if [ ! -f "$config" ]; then
+    error "Config file not found: $config"
+    exit 1
+  fi
+
+  local iter=0
+  local total_ms=0
+  local cap_errors=0
+  local started_stream=0
+
+  if [ "$method" != "ondemand" ]; then
+    if is_streaming; then
+      warn "Using existing stream"
+    else
+      info "Starting $method stream..."
+      case "$method" in
+        60fps) start_loopback_60fps ;;
+        5fps)  start_loopback_5fps ;;
+        mjpeg) start_loopback_mjpeg ;;
+        nice)  start_loopback_nice ;;
+      esac
+      started_stream=1
+    fi
+  fi
+
+  print_summary() {
+    local avg=0
+    [ "$iter" -gt 0 ] && avg=$(( total_ms / iter ))
+    echo ""
+    echo -e "${CYAN}════════════════════════════════════════════════════════${NC}"
+    echo -e "${CYAN}   Read Loop Summary${NC}"
+    echo -e "${CYAN}════════════════════════════════════════════════════════${NC}"
+    echo -e "  Finished:       $(date '+%Y-%m-%d %H:%M:%S')"
+    echo -e "  Iterations:     $iter"
+    echo -e "  Capture errors: $cap_errors"
+    echo -e "  Avg capture:    ${avg}ms"
+    echo -e "  Log:            $log_file"
+    echo -e "${CYAN}════════════════════════════════════════════════════════${NC}"
+    echo ""
+  }
+
+  trap 'print_summary; [ "$started_stream" -eq 1 ] && stop_stream; rm -f $output /tmp/loop_ocr.png; exit 0' INT TERM
+
+  echo ""
+  echo -e "${CYAN}════════════════════════════════════════════════════════${NC}"
+  echo -e "${CYAN}   Read Loop${NC}"
+  echo -e "${CYAN}════════════════════════════════════════════════════════${NC}"
+  echo -e "  Method:    $method"
+  echo -e "  Config:    $config"
+  echo -e "  Interval:  ${interval}s"
+  if [ "$max_iterations" -eq 0 ]; then
+    echo -e "  Max iters: unlimited"
+  else
+    echo -e "  Max iters: $max_iterations"
+  fi
+  echo -e "  Log:       $log_file"
+  echo -e "  Started:   $(date '+%Y-%m-%d %H:%M:%S')"
+  echo -e "${CYAN}════════════════════════════════════════════════════════${NC}"
+  echo -e "  Press ${YELLOW}Ctrl+C${NC} to stop"
+  echo ""
+
+  {
+    echo "# Read Loop Log"
+    echo "# Started:  $(date '+%Y-%m-%d %H:%M:%S')"
+    echo "# Method:   $method"
+    echo "# Config:   $config"
+    echo "# Format:   iter|timestamp|capture_ms|label=value..."
+  } > "$log_file"
+
+  while true; do
+    iter=$(( iter + 1 ))
+    local ts
+    ts=$(date '+%Y-%m-%d %H:%M:%S')
+    local log_regions=""
+
+    # Capture
+    local t_start t_end cap_ms cap_ok
+    t_start=$(date +%s%N)
+    cap_ok=1
+
+    if [ "$method" = "ondemand" ]; then
+      ffmpeg -f v4l2 -input_format yuyv422 -video_size 1920x1080 \
+        -framerate 60 -i "$DEVICE" \
+        -vf "select='gte(n,60)',scale=1920:1080,format=rgb24" \
+        -vframes 1 -update 1 -y "$output" \
+        -loglevel quiet 2>/dev/null || cap_ok=0
+    else
+      ffmpeg -f v4l2 -i "$VIRT" \
+        -vframes 1 -update 1 -y "$output" \
+        -loglevel quiet 2>/dev/null || cap_ok=0
+    fi
+
+    t_end=$(date +%s%N)
+    cap_ms=$(( (t_end - t_start) / 1000000 ))
+    total_ms=$(( total_ms + cap_ms ))
+
+    if [ "$cap_ok" -eq 0 ] || [ ! -s "$output" ]; then
+      cap_errors=$(( cap_errors + 1 ))
+      echo -e "  [$(printf '%4d' $iter)] $ts ${RED}CAPTURE FAILED${NC} (${cap_ms}ms)"
+      echo "${iter}|${ts}|${cap_ms}|CAPTURE_FAILED" >> "$log_file"
+      sleep "$interval"
+      [ "$max_iterations" -gt 0 ] && [ "$iter" -ge "$max_iterations" ] && break
+      continue
+    fi
+
+    # OCR each region and collect results
+    local results=()
+    while IFS='|' read -r lbl crop shave wl opts exp; do
+      [[ "$lbl" =~ ^[[:space:]]*# ]] && continue
+      [[ -z "$lbl" ]] && continue
+
+      lbl=$(echo "$lbl"     | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+      crop=$(echo "$crop"   | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+      shave=$(echo "$shave" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+      wl=$(echo "$wl"       | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+      opts=$(echo "$opts"   | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+
+      local icmd
+      icmd="convert \"$output\" -crop \"$crop\" +repage"
+      [ -n "$shave" ] && [ "$shave" != "0x0" ] && icmd="$icmd -shave \"$shave\""
+      echo "$opts" | grep -q "scale3x" && icmd="$icmd -resize 300%"
+      echo "$opts" | grep -q "scale2x" && icmd="$icmd -resize 200%"
+      icmd="$icmd -colorspace Gray -normalize"
+      echo "$opts" | grep -q "invert" && icmd="$icmd -negate"
+      icmd="$icmd -threshold 40% /tmp/loop_ocr.png"
+      eval "$icmd" 2>/dev/null
+
+      local ocr_result
+      if [ -n "$wl" ]; then
+        ocr_result=$(tesseract /tmp/loop_ocr.png stdout --psm 7 \
+          -c tessedit_char_whitelist="$wl" 2>/dev/null)
+      else
+        ocr_result=$(tesseract /tmp/loop_ocr.png stdout --psm 7 2>/dev/null)
+      fi
+      ocr_result=$(printf '%s' "$ocr_result" | tr -d '\014\015' | \
+        sed 's/^[[:space:]]*//;s/[[:space:]]*$//;s/,,*/,/g')
+
+      results+=("${lbl}|${ocr_result}")
+      log_regions="${log_regions}${lbl}=${ocr_result}|"
+
+    done < "$config"
+
+    # CPU/mem of stream process
+    local stream_info=""
+    if is_streaming; then
+      local spid
+      spid=$(cat "$PIDFILE" 2>/dev/null)
+      if [ -n "$spid" ] && kill -0 "$spid" 2>/dev/null; then
+        local scpu srss srss_mb
+        scpu=$(ps -p "$spid" -o %cpu= 2>/dev/null | tr -d ' ')
+        srss=$(ps -p "$spid" -o rss= 2>/dev/null | tr -d ' ')
+        srss_mb=$(( srss / 1024 ))
+        stream_info=" CPU:${scpu}% MEM:${srss_mb}MB"
+      fi
+    fi
+
+    # Print iteration header then one line per region
+    printf "  [%4d] %s  %4dms%s\n" "$iter" "$ts" "$cap_ms" "$stream_info"
+    for entry in "${results[@]}"; do
+      local r_lbl r_val
+      r_lbl="${entry%%|*}"
+      r_val="${entry#*|}"
+      printf "         ${CYAN}%-22s${NC} %s\n" "${r_lbl}:" "$r_val"
+    done
+
+    echo "${iter}|${ts}|${cap_ms}|${log_regions}" >> "$log_file"
+
+    [ "$max_iterations" -gt 0 ] && [ "$iter" -ge "$max_iterations" ] && break
+
+    sleep "$interval"
+  done
+
+  print_summary
+  [ "$started_stream" -eq 1 ] && stop_stream
+  rm -f "$output" /tmp/loop_ocr.png
+}
+
 # ─── Status ───────────────────────────────────────────────
 status() {
   echo ""
@@ -659,7 +852,8 @@ usage() {
   echo "Utility:"
   echo "  benchmark [config]                 Test all methods + OCR validation"
   echo "  validate [img] [cfg]               OCR validate an existing image"
-  echo "  loop-test [method] [cfg] [secs] [n] Run capture+OCR in a loop"
+  echo "  loop-test [method] [cfg] [secs] [n] Run capture+OCR in a loop, showing pass/fail"
+  echo "  read-loop [method] [cfg] [secs] [n] Run capture+OCR in a loop, printing values only"
   echo "    method: 60fps | 5fps | mjpeg | nice | ondemand (default: ondemand)"
   echo "    secs:   interval between captures in seconds   (default: 5)"
   echo "    n:      number of iterations, 0=unlimited      (default: 0)"
@@ -673,6 +867,7 @@ usage() {
   echo "  $0 validate capture.png test_regions.conf"
   echo "  $0 loop-test ondemand test_regions.conf 5 0"
   echo "  $0 loop-test 5fps test_regions.conf 10 100"
+  echo "  $0 read-loop 5fps configs/mymachine.conf 5 0"
   echo ""
 }
 
@@ -688,6 +883,7 @@ case "$1" in
   benchmark)         benchmark "${2:-/tmp/bench_capture.png}" "${3:-test_regions.conf}" ;;
   validate)          validate "${2:-$DEFAULT_OUTPUT}" "${3:-test_regions.conf}" ;;
   loop-test)         loop_test "${2:-ondemand}" "${3:-test_regions.conf}" "${4:-5}" "${5:-0}" ;;
+  read-loop)         read_loop "${2:-ondemand}" "${3:-test_regions.conf}" "${4:-5}" "${5:-0}" ;;
   status)            status ;;
   *)                 usage ;;
 esac
