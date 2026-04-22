@@ -1,0 +1,36 @@
+{
+  "name": "900p Two Regions — Colored Medium Contrast",
+  "pi_ip": "192.168.1.166",
+  "pi_port": 8080,
+  "display_index": 1,
+  "settle_ms": 1000,
+  "scene": { "width": 1600, "height": 900, "background": "#111827" },
+  "regions": [
+    {
+      "label": "Bonus Amount",
+      "x": 150, "y": 150,
+      "w": 500, "h": 110,
+      "bg_color": "#1a237e",
+      "text": "$250.00",
+      "text_color": "#ffee00",
+      "font_size": 64,
+      "font_family": "monospace",
+      "shave": "0x0",
+      "whitelist": "0123456789.$",
+      "options": ["invert"]
+    },
+    {
+      "label": "Free Spins",
+      "x": 150, "y": 600,
+      "w": 380, "h": 100,
+      "bg_color": "#0a2a0a",
+      "text": "$10.00",
+      "text_color": "#00e676",
+      "font_size": 58,
+      "font_family": "monospace",
+      "shave": "0x0",
+      "whitelist": "0123456789.$",
+      "options": ["invert"]
+    }
+  ]
+}

@@ -1,0 +1,49 @@
+{
+  "name": "1080p Three Regions — Labels and Numbers",
+  "pi_ip": "192.168.1.166",
+  "pi_port": 8080,
+  "display_index": 1,
+  "settle_ms": 1000,
+  "scene": { "width": 1920, "height": 1080, "background": "#181818" },
+  "regions": [
+    {
+      "label": "Header Label",
+      "x": 760, "y": 80,
+      "w": 400, "h": 80,
+      "bg_color": "#ffd600",
+      "text": "BONUS",
+      "text_color": "#000000",
+      "font_size": 52,
+      "font_family": "sans-serif",
+      "shave": "0x0",
+      "whitelist": "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+      "options": []
+    },
+    {
+      "label": "Spin Count",
+      "x": 810, "y": 370,
+      "w": 300, "h": 90,
+      "bg_color": "#ffffff",
+      "text": "42",
+      "text_color": "#000000",
+      "font_size": 60,
+      "font_family": "monospace",
+      "shave": "0x0",
+      "whitelist": "0123456789",
+      "options": []
+    },
+    {
+      "label": "Win Amount",
+      "x": 710, "y": 650,
+      "w": 500, "h": 110,
+      "bg_color": "#000000",
+      "text": "$3,000.00",
+      "text_color": "#ffffff",
+      "font_size": 64,
+      "font_family": "monospace",
+      "shave": "0x0",
+      "whitelist": "0123456789.$,",
+      "options": ["invert"]
+    }
+  ]
+}

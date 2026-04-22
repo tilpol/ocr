@@ -120,6 +120,7 @@ Zero new dependencies (Python 3 stdlib only).
 ```json
 {
   "capture_method": "auto",
+  "save_images": false,
   "regions": [
     { "label": "Major Progressive", "crop": "579x124+679+693",
       "shave": "0x0", "whitelist": "", "options": ["invert"] }
@@ -127,13 +128,17 @@ Zero new dependencies (Python 3 stdlib only).
 }
 ```
 `capture_method`: `"loopback"` | `"ondemand"` | `"auto"` (auto picks loopback if stream is running).
+`save_images`: if `true`, saves `capture.png` + one processed PNG per region to
+`/tmp/ocr_captures/<timestamp>/` and returns `saved_images_dir` in the response.
 
 **`POST /ocr`** — response:
 ```json
 { "success": true, "capture_ms": 530, "capture_method": "loopback",
   "timestamp": "2026-04-16T14:30:00Z",
+  "saved_images_dir": "/tmp/ocr_captures/20260416_143000",
   "results": [{ "label": "Major Progressive", "value": "$7,500.05" }] }
 ```
+`saved_images_dir` is only present when `save_images` was `true`.
 
 ---
 

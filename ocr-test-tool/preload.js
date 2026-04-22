@@ -9,10 +9,11 @@ contextBridge.exposeInMainWorld('api', {
   readFile:         (filePath)           => ipcRenderer.invoke('read-file', filePath),
   writeFile:        (filePath, content)  => ipcRenderer.invoke('write-file', filePath, content),
   listTestCases:    (dirPath)            => ipcRenderer.invoke('list-test-cases', dirPath),
+  newSuiteLogPath:  ()                   => ipcRenderer.invoke('new-suite-log-path'),
 
   // ── Pi communication ─────────────────────────────────────────────────────
   checkPiStatus:   (ip, port)            => ipcRenderer.invoke('check-pi-status', ip, port),
-  runTest:         (testCase)            => ipcRenderer.invoke('run-test', testCase),
+  runTest:         (testCase, options)   => ipcRenderer.invoke('run-test', testCase, options),
 
   // ── Window management ────────────────────────────────────────────────────
   openEditor:       (testCase)           => ipcRenderer.invoke('open-editor', testCase),

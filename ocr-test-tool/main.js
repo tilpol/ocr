@@ -83,9 +83,16 @@ app.on('activate', () => {
 // ─── Window factories ─────────────────────────────────────────────────────────
 
 function createMainWindow() {
+  const primaryDisplay = screen.getAllDisplays()[0]
+  const { x: dx, y: dy, width: dw, height: dh } = primaryDisplay.bounds
+  const winW = 1100
+  const winH = 720
+
   mainWindow = new BrowserWindow({
-    width:  1100,
-    height: 720,
+    x: dx + Math.round((dw - winW) / 2),
+    y: dy + Math.round((dh - winH) / 2),
+    width:  winW,
+    height: winH,
     minWidth:  800,
     minHeight: 560,
     title: 'OCR Test Tool',
@@ -211,6 +218,7 @@ function sleep(ms) {
 // ─── IPC — file operations ────────────────────────────────────────────────────
 
 ipcMain.handle('open-folder-dialog', async () => {
+  mainWindow.focus()
   const result = await dialog.showOpenDialog(mainWindow, {
     title:      'Select Test Suite Folder',
     properties: ['openDirectory'],
@@ -226,6 +234,7 @@ ipcMain.handle('list-test-cases', async (_, dirPath) => {
 })
 
 ipcMain.handle('open-file-dialog', async () => {
+  mainWindow.focus()
   const result = await dialog.showOpenDialog(mainWindow, {
     title:       'Open Test Case',
     filters:     [{ name: 'JSON Test Case', extensions: ['json'] }],
@@ -235,6 +244,7 @@ ipcMain.handle('open-file-dialog', async () => {
 })
 
 ipcMain.handle('save-file-dialog', async (_, defaultName) => {
+  mainWindow.focus()
   const result = await dialog.showSaveDialog(mainWindow, {
     title:       'Save Test Case',
     defaultPath: defaultName || 'test-case.json',
@@ -252,6 +262,13 @@ ipcMain.handle('write-file', async (_, filePath, content) => {
   return true
 })
 
+ipcMain.handle('new-suite-log-path', () => {
+  const logsDir = path.join(__dirname, 'logs')
+  fs.mkdirSync(logsDir, { recursive: true })
+  const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
+  return path.join(logsDir, `suite_${ts}.log`)
+})
+
 // ─── IPC — Pi communication ───────────────────────────────────────────────────
 
 ipcMain.handle('check-pi-status', async (_, ip, port) => {
@@ -264,7 +281,7 @@ ipcMain.handle('check-pi-status', async (_, ip, port) => {
 
 // ─── IPC — run test ───────────────────────────────────────────────────────────
 
-ipcMain.handle('run-test', async (_, testCase) => {
+ipcMain.handle('run-test', async (_, testCase, options = {}) => {
   // 1. Check display resolution matches the scene — fail fast if not
   const displayIdx = testCase.display_index ?? 0
   const sceneW     = (testCase.scene || {}).width  || 1920
@@ -315,13 +332,16 @@ ipcMain.handle('run-test', async (_, testCase) => {
   }))
 
   // 4. POST to Pi
+  const postBody = { capture_method: 'auto', regions: ocrRegions }
+  if (options.save_images) postBody.save_images = true
+
   let piResponse
   try {
     piResponse = await httpPost(
       testCase.pi_ip,
       testCase.pi_port,
       '/ocr',
-      { capture_method: 'auto', regions: ocrRegions }
+      postBody
     )
   } catch (err) {
     dispWin.close()
@@ -343,10 +363,11 @@ ipcMain.handle('run-test', async (_, testCase) => {
   })
 
   return {
-    success:        true,
-    capture_ms:     piResponse.capture_ms,
-    capture_method: piResponse.capture_method,
-    timestamp:      piResponse.timestamp,
+    success:          true,
+    capture_ms:       piResponse.capture_ms,
+    capture_method:   piResponse.capture_method,
+    timestamp:        piResponse.timestamp,
+    saved_images_dir: piResponse.saved_images_dir || null,
     results,
   }
 })

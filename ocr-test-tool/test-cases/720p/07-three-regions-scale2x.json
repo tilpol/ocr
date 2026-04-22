@@ -1,0 +1,49 @@
+{
+  "name": "720p Three Regions — scale2x Small Text",
+  "pi_ip": "192.168.1.166",
+  "pi_port": 8080,
+  "display_index": 1,
+  "settle_ms": 1000,
+  "scene": { "width": 1280, "height": 720, "background": "#f0f0f0" },
+  "regions": [
+    {
+      "label": "Line 1",
+      "x": 100, "y": 100,
+      "w": 280, "h": 65,
+      "bg_color": "#e8e8e8",
+      "text": "100",
+      "text_color": "#222222",
+      "font_size": 30,
+      "font_family": "monospace",
+      "shave": "0x0",
+      "whitelist": "0123456789",
+      "options": ["scale2x"]
+    },
+    {
+      "label": "Line 2",
+      "x": 100, "y": 420,
+      "w": 280, "h": 65,
+      "bg_color": "#e8e8e8",
+      "text": "200",
+      "text_color": "#222222",
+      "font_size": 30,
+      "font_family": "monospace",
+      "shave": "0x0",
+      "whitelist": "0123456789",
+      "options": ["scale2x"]
+    },
+    {
+      "label": "Line 3",
+      "x": 100, "y": 740,
+      "w": 280, "h": 65,
+      "bg_color": "#e8e8e8",
+      "text": "300",
+      "text_color": "#222222",
+      "font_size": 30,
+      "font_family": "monospace",
+      "shave": "0x0",
+      "whitelist": "0123456789",
+      "options": ["scale2x"]
+    }
+  ]
+}

@@ -1,0 +1,75 @@
+{
+  "name": "900p Five Regions — scale3x Stress Test",
+  "pi_ip": "192.168.1.166",
+  "pi_port": 8080,
+  "display_index": 1,
+  "settle_ms": 1000,
+  "scene": { "width": 1600, "height": 900, "background": "#1c1c1c" },
+  "regions": [
+    {
+      "label": "Tiny Label A",
+      "x": 100, "y": 80,
+      "w": 260, "h": 60,
+      "bg_color": "#000000",
+      "text": "BET",
+      "text_color": "#cccccc",
+      "font_size": 30,
+      "font_family": "sans-serif",
+      "shave": "0x0",
+      "whitelist": "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+      "options": ["invert", "scale3x"]
+    },
+    {
+      "label": "Tiny Value A",
+      "x": 100, "y": 220,
+      "w": 260, "h": 60,
+      "bg_color": "#000000",
+      "text": "5",
+      "text_color": "#ffffff",
+      "font_size": 30,
+      "font_family": "monospace",
+      "shave": "0x0",
+      "whitelist": "0123456789",
+      "options": ["invert", "scale3x"]
+    },
+    {
+      "label": "Tiny Label B",
+      "x": 100, "y": 360,
+      "w": 260, "h": 60,
+      "bg_color": "#000000",
+      "text": "WIN",
+      "text_color": "#cccccc",
+      "font_size": 30,
+      "font_family": "sans-serif",
+      "shave": "0x0",
+      "whitelist": "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+      "options": ["invert", "scale3x"]
+    },
+    {
+      "label": "Tiny Value B",
+      "x": 100, "y": 500,
+      "w": 260, "h": 60,
+      "bg_color": "#000000",
+      "text": "7",
+      "text_color": "#ffffff",
+      "font_size": 30,
+      "font_family": "monospace",
+      "shave": "0x0",
+      "whitelist": "0123456789",
+      "options": ["invert", "scale3x"]
+    },
+    {
+      "label": "Main Display",
+      "x": 560, "y": 350,
+      "w": 800, "h": 130,
+      "bg_color": "#ffffff",
+      "text": "$12,345.67",
+      "text_color": "#000000",
+      "font_size": 76,
+      "font_family": "monospace",
+      "shave": "0x0",
+      "whitelist": "0123456789.$,",
+      "options": []
+    }
+  ]
+}

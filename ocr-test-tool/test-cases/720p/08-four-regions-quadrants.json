@@ -1,0 +1,62 @@
+{
+  "name": "720p Four Regions — Quadrant Layout",
+  "pi_ip": "192.168.1.166",
+  "pi_port": 8080,
+  "display_index": 1,
+  "settle_ms": 1000,
+  "scene": { "width": 1280, "height": 720, "background": "#0f172a" },
+  "regions": [
+    {
+      "label": "Top Left",
+      "x": 80, "y": 80,
+      "w": 420, "h": 100,
+      "bg_color": "#ffffff",
+      "text": "$99.99",
+      "text_color": "#000000",
+      "font_size": 58,
+      "font_family": "monospace",
+      "shave": "0x0",
+      "whitelist": "0123456789.$",
+      "options": []
+    },
+    {
+      "label": "Top Right",
+      "x": 1420, "y": 80,
+      "w": 420, "h": 100,
+      "bg_color": "#000000",
+      "text": "$199.99",
+      "text_color": "#ffffff",
+      "font_size": 52,
+      "font_family": "monospace",
+      "shave": "0x0",
+      "whitelist": "0123456789.$",
+      "options": ["invert"]
+    },
+    {
+      "label": "Bottom Left",
+      "x": 80, "y": 900,
+      "w": 420, "h": 100,
+      "bg_color": "#ffd600",
+      "text": "JACKPOT",
+      "text_color": "#1a1a1a",
+      "font_size": 52,
+      "font_family": "sans-serif",
+      "shave": "0x0",
+      "whitelist": "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+      "options": []
+    },
+    {
+      "label": "Bottom Right",
+      "x": 1420, "y": 900,
+      "w": 340, "h": 100,
+      "bg_color": "#0d1117",
+      "text": "BONUS",
+      "text_color": "#e2e8f0",
+      "font_size": 52,
+      "font_family": "sans-serif",
+      "shave": "0x0",
+      "whitelist": "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+      "options": ["invert"]
+    }
+  ]
+}

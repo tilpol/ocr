@@ -1,0 +1,23 @@
+{
+  "name": "900p Single — White-on-Black Currency",
+  "pi_ip": "192.168.1.166",
+  "pi_port": 8080,
+  "display_index": 1,
+  "settle_ms": 1000,
+  "scene": { "width": 1600, "height": 900, "background": "#111111" },
+  "regions": [
+    {
+      "label": "Major Jackpot",
+      "x": 660, "y": 490,
+      "w": 600, "h": 100,
+      "bg_color": "#000000",
+      "text": "$7,500.05",
+      "text_color": "#ffffff",
+      "font_size": 60,
+      "font_family": "monospace",
+      "shave": "0x0",
+      "whitelist": "0123456789.$,",
+      "options": ["invert"]
+    }
+  ]
+}

@@ -47,6 +47,12 @@
       </div>
       <button class="btn btn-secondary" id="btn-check-pi">Check Pi</button>
       <button class="btn btn-secondary" id="btn-run-suite">Run Suite</button>
+      <input type="number" id="suite-iterations" class="suite-iter-input" value="0" min="0" step="1" title="Number of passes (0 = loop forever)">
+      <span class="toolbar-label">passes (0=∞)</span>
+      <label class="toolbar-checkbox" title="Save captured frame and processed region images on the Pi (under /tmp/ocr_captures/)">
+        <input type="checkbox" id="save-images-cb">
+        Save images
+      </label>
       <div class="toolbar-spacer"></div>
       <button class="btn btn-secondary" id="btn-preview">Preview Display</button>
       <button class="btn btn-run" id="btn-run" disabled>Run Test ▶</button>

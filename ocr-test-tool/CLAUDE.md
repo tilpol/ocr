@@ -44,8 +44,12 @@ ocr-test-tool/
 ├── display/
 │   ├── display.html     # Fullscreen scene renderer (opens on capture monitor)
 │   └── display.js       # Scene rendering logic (external file, required by CSP)
+├── logs/                # Suite run logs — auto-named suite_YYYY-MM-DDTHH-MM-SS.log
 └── test-cases/
     ├── example.json     # Example test case with 3 OCR scenarios
+    ├── 720p/            # 10 pre-built 720p (1280×720) test cases
+    ├── 900p/            # 10 pre-built 900p (1600×900) test cases
+    ├── 1080p/           # 10 pre-built 1080p (1920×1080) test cases
     └── 2K/              # 10 pre-built 2K (2560×1440) test cases
         ├── 01-single-dark-currency.json
         ├── 02-single-white-on-black.json
@@ -74,6 +78,11 @@ inline scripts. All JavaScript must live in external `.js` files (e.g. `display.
 **Scene data flow:** `main.js` stores the pending test case in `pendingSceneData` before opening
 the display window. The display window calls `window.api.getSceneData()` on `DOMContentLoaded`
 to pull it — no push/timing race.
+
+**Pi IP persistence:** `renderer.js` saves `pi_ip` and `pi_port` to `localStorage` whenever a
+test case is loaded. On startup, if a saved IP exists, the Pi is checked automatically and the
+status bar shows the IP. The **Check Pi** button works even without a loaded test case by
+using the saved IP.
 
 ---
 
@@ -124,29 +133,40 @@ to the Pi. 1000ms is usually enough for the HDMI signal to stabilise.
 
 ## Test Flow (run-test IPC)
 
-1. `renderer.js` calls `window.api.runTest(testCase)` → `main.js ipcMain.handle('run-test')`
+1. `renderer.js` calls `window.api.runTest(testCase, options)` → `main.js ipcMain.handle('run-test')`
 2. `main.js` checks display resolution via `xrandr --query` — returns error immediately if
    `display_index` resolution ≠ `scene.width × scene.height`
 3. `main.js` opens the display window fullscreen on `display_index`
 4. `display.js` pulls scene data via `getSceneData()`, renders canvas, calls `signalReady()`
 5. `main.js` receives `display-ready` signal, waits `settle_ms`
-6. `main.js` POSTs to `http://{pi_ip}:{pi_port}/ocr` with region list (no expected values)
+6. `main.js` POSTs to `http://{pi_ip}:{pi_port}/ocr` with region list (no expected values);
+   if `options.save_images` is true, `save_images: true` is included in the POST body
 7. Pi captures HDMI feed at 1920×1080, OCRs each region using the original crop coords
 8. `main.js` closes display window, attaches expected values, computes pass/fail
-9. Returns result to `renderer.js` which renders the results table
+9. Returns result to `renderer.js` which renders the results table; if `saved_images_dir` is
+   present in the Pi response, it is shown below the results header
 
 ---
 
 ## Suite Runner
 
 The **Run Suite** button opens a folder picker. All `.json` files in the chosen folder are run
-in alphabetical order, looping continuously until the user clicks **■ Stop** or a test fails.
+in alphabetical order. The toolbar has two controls next to the button:
+
+- **Passes input** (number, default 0): how many complete passes to run; `0` loops forever
+- **Save images checkbox**: if checked, passes `save_images: true` to the Pi on every test —
+  the Pi saves `capture.png` + processed region images to `/tmp/ocr_captures/<timestamp>/`
+  and returns the path; it is shown below the results header
+
+Suite behaviour:
 
 - Each file gets a PASS/FAIL row in the suite panel with failure detail if OCR doesn't match
-- A divider row marks the end of each complete pass through the folder
+- A divider row marks the end of each complete pass (shows `Pass N / M` when a limit is set)
 - On failure the suite stops immediately and shows which region failed and what was expected vs got
-- `test-cases/2K/` contains 10 pre-built cases covering 1–5 regions, varied contrast, and
-  scale2x/scale3x options
+- A timestamped log file is written to `logs/suite_<timestamp>.log` with per-test PASS/FAIL
+  lines, per-region detail, and a summary at the end
+- `test-cases/2K/`, `test-cases/1080p/`, `test-cases/900p/`, and `test-cases/720p/` each
+  contain 10 pre-built cases covering 1–5 regions, varied contrast, and scale2x/scale3x options
 
 ---
 
@@ -161,21 +181,26 @@ in alphabetical order, looping continuously until the user clicks **■ Stop** o
 ```json
 {
   "capture_method": "auto",
+  "save_images": false,
   "regions": [
     { "label": "Major Progressive", "crop": "579x124+679+693",
       "shave": "0x0", "whitelist": "", "options": ["invert"] }
   ]
 }
 ```
+`save_images`: if `true`, the Pi saves `capture.png` + one processed PNG per region to
+`/tmp/ocr_captures/<timestamp>/` and includes `saved_images_dir` in the response.
 
 **`POST /ocr`** — response:
 ```json
 {
   "success": true, "capture_ms": 530, "capture_method": "loopback",
   "timestamp": "2026-04-16T14:30:00Z",
+  "saved_images_dir": "/tmp/ocr_captures/20260416_143000",
   "results": [{ "label": "Major Progressive", "value": "$7,500.05" }]
 }
 ```
+`saved_images_dir` is only present when `save_images` was `true` in the request.
 
 The HTTP client in `main.js` uses Node's built-in `http` module — no external npm packages
 for networking.

@@ -16,6 +16,7 @@ import http.server
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -94,7 +95,7 @@ def capture_frame(method='auto'):
 
 # ─── OCR pipeline ─────────────────────────────────────────────────────────────
 
-def ocr_region(image_path, region):
+def ocr_region(image_path, region, save_dir=None):
     """
     Preprocess a region of the capture image with ImageMagick then OCR with Tesseract.
     Mirrors the pipeline in ocr.sh exactly.
@@ -105,6 +106,8 @@ def ocr_region(image_path, region):
         shave     — edges to trim: NxN (or '0x0' / '' to skip)
         whitelist — allowed chars for Tesseract ('' = all)
         options   — list of strings: 'invert', 'scale2x', 'scale3x'
+
+    save_dir: if set, copies the processed region image there before OCR.
 
     Returns the OCR result string (stripped), or '' on any failure.
     """
@@ -139,6 +142,9 @@ def ocr_region(image_path, region):
         proc = subprocess.run(cmd, capture_output=True)
         if proc.returncode != 0 or not os.path.exists(tmp_file) or os.path.getsize(tmp_file) == 0:
             return ''
+
+        if save_dir:
+            shutil.copy2(tmp_file, os.path.join(save_dir, f'{safe_label}.png'))
 
         # ── Tesseract OCR ────────────────────────────────────────────────────
         tess_cmd = ['tesseract', tmp_file, 'stdout', '--psm', '7']
@@ -213,6 +219,7 @@ class OCRHandler(http.server.BaseHTTPRequestHandler):
             return
 
         capture_method = data.get('capture_method', 'auto')
+        save_images    = data.get('save_images', False)
 
         # ── Capture frame ────────────────────────────────────────────────────
         try:
@@ -221,22 +228,33 @@ class OCRHandler(http.server.BaseHTTPRequestHandler):
             self.send_json(500, {'success': False, 'error': str(e)})
             return
 
+        # ── Optionally save images ───────────────────────────────────────────
+        save_dir = None
+        if save_images:
+            ts       = datetime.now().strftime('%Y%m%d_%H%M%S')
+            save_dir = f'/tmp/ocr_captures/{ts}'
+            os.makedirs(save_dir, exist_ok=True)
+            shutil.copy2(image_path, os.path.join(save_dir, 'capture.png'))
+
         # ── OCR each region ──────────────────────────────────────────────────
         results = []
         for region in regions:
-            value = ocr_region(image_path, region)
+            value = ocr_region(image_path, region, save_dir=save_dir)
             results.append({
                 'label': region.get('label', ''),
                 'value': value,
             })
 
-        self.send_json(200, {
+        response = {
             'success':        True,
             'capture_ms':     capture_ms,
             'capture_method': method_used,
             'timestamp':      datetime.now(timezone.utc).isoformat(),
             'results':        results,
-        })
+        }
+        if save_dir:
+            response['saved_images_dir'] = save_dir
+        self.send_json(200, response)
 
 
 # ─── Entry point ──────────────────────────────────────────────────────────────

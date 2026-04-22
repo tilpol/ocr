@@ -1,0 +1,75 @@
+{
+  "name": "1080p Five Regions — Progressive Board",
+  "pi_ip": "192.168.1.166",
+  "pi_port": 8080,
+  "display_index": 1,
+  "settle_ms": 1000,
+  "scene": { "width": 1920, "height": 1080, "background": "#0a0a1e" },
+  "regions": [
+    {
+      "label": "Grand",
+      "x": 560, "y": 60,
+      "w": 800, "h": 130,
+      "bg_color": "#000000",
+      "text": "$25,000.00",
+      "text_color": "#ffd700",
+      "font_size": 76,
+      "font_family": "monospace",
+      "shave": "0x0",
+      "whitelist": "0123456789.$,",
+      "options": ["invert"]
+    },
+    {
+      "label": "Major",
+      "x": 620, "y": 240,
+      "w": 680, "h": 110,
+      "bg_color": "#0d0d1a",
+      "text": "$7,500.05",
+      "text_color": "#ffffff",
+      "font_size": 64,
+      "font_family": "monospace",
+      "shave": "0x0",
+      "whitelist": "0123456789.$,",
+      "options": ["invert"]
+    },
+    {
+      "label": "Minor",
+      "x": 680, "y": 410,
+      "w": 560, "h": 100,
+      "bg_color": "#f5f5f5",
+      "text": "$500.00",
+      "text_color": "#1a1a1a",
+      "font_size": 58,
+      "font_family": "monospace",
+      "shave": "0x0",
+      "whitelist": "0123456789.$",
+      "options": []
+    },
+    {
+      "label": "Mini",
+      "x": 760, "y": 570,
+      "w": 400, "h": 90,
+      "bg_color": "#0a2a0a",
+      "text": "$50.00",
+      "text_color": "#00e676",
+      "font_size": 52,
+      "font_family": "monospace",
+      "shave": "0x0",
+      "whitelist": "0123456789.$",
+      "options": ["invert"]
+    },
+    {
+      "label": "Credits",
+      "x": 810, "y": 730,
+      "w": 300, "h": 65,
+      "bg_color": "#e8e8e8",
+      "text": "9999",
+      "text_color": "#111111",
+      "font_size": 34,
+      "font_family": "monospace",
+      "shave": "0x0",
+      "whitelist": "0123456789",
+      "options": ["scale2x"]
+    }
+  ]
+}
