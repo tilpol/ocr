@@ -5,6 +5,35 @@ DEVICE=/dev/video0
 VIRT=/dev/video10
 PIDFILE=/tmp/capture_stream.pid
 DEFAULT_OUTPUT=capture.png
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# ─── Capture settings (capture.conf; environment variables override) ───
+# Defaults here match capture.conf so the script still works without it.
+_conf_defaults() {
+  CAPTURE_MODE=managed
+  I2C_BUS=6
+  PS176_BASE=0x48
+  LINK_TIMEOUT=15
+  LINK_DOWN_TIMEOUT=15
+  SETTLE_MS=1000
+  CAPTURE_RETRIES=3
+  POLL_MS=50
+  LOCK_FILE=/tmp/capture.lock
+}
+_load_conf() {
+  local keys="CAPTURE_MODE I2C_BUS PS176_BASE LINK_TIMEOUT SETTLE_MS CAPTURE_RETRIES POLL_MS LOCK_FILE LINK_DOWN_TIMEOUT"
+  local k saved=()
+  # 1. remember env overrides (before defaults/file overwrite them)
+  for k in $keys; do [ -n "${!k+x}" ] && saved+=("$k=${!k}"); done
+  # 2. defaults, then capture.conf
+  _conf_defaults
+  [ -f "$SCRIPT_DIR/capture.conf" ] && source "$SCRIPT_DIR/capture.conf"
+  # 3. re-apply env overrides
+  for k in "${saved[@]}"; do declare -g "${k%%=*}=${k#*=}"; done
+}
+_load_conf
+PS176_LINK="python3 $SCRIPT_DIR/ps176_link.py"
+export CAPTURE_MODE I2C_BUS PS176_BASE LINK_TIMEOUT LINK_DOWN_TIMEOUT SETTLE_MS CAPTURE_RETRIES POLL_MS LOCK_FILE
 
 # ─── Colours for output ───────────────────────────────────
 RED='\033[0;31m'
@@ -103,6 +132,20 @@ start_loopback_60fps() {
 }
 
 # ─── Method 2: loopback at 5fps (reduced CPU) ─────────────
+# Shared ffmpeg launch (no settle delay) — used by start-5fps and managed capture.
+# Only calls modprobe (sudo) if the loopback device is missing.
+spawn_5fps_ffmpeg() {
+  [ -e "$VIRT" ] || sudo modprobe v4l2loopback devices=1 video_nr=10 card_label="capture" 2>/dev/null
+  ffmpeg -f v4l2 -input_format yuyv422 -video_size 1920x1080 \
+    -framerate 60 \
+    -i "$DEVICE" \
+    -vf "scale=1920:1080,format=yuv420p" \
+    -r 5 \
+    -f v4l2 "$VIRT" \
+    -loglevel quiet 9>&- &      # 9>&-: don't leak the capture lock fd into ffmpeg
+  echo $! > "$PIDFILE"
+}
+
 start_loopback_5fps() {
   check_device
   if is_streaming; then
@@ -110,15 +153,7 @@ start_loopback_5fps() {
     return 1
   fi
   info "Starting loopback stream at 5fps (reduced CPU)..."
-  sudo modprobe v4l2loopback devices=1 video_nr=10 card_label="capture" 2>/dev/null
-  ffmpeg -f v4l2 -input_format yuyv422 -video_size 1920x1080 \
-    -framerate 60 \
-    -i "$DEVICE" \
-    -vf "scale=1920:1080,format=yuv420p" \
-    -r 5 \
-    -f v4l2 "$VIRT" \
-    -loglevel quiet &
-  echo $! > "$PIDFILE"
+  spawn_5fps_ffmpeg
   sleep 2
   success "Loopback 5fps started (PID $(cat $PIDFILE))"
   info "Capture with: $0 capture-loopback"
@@ -182,6 +217,173 @@ capture_loopback() {
   local ms=$(( (end - start) / 1000000 ))
   success "Captured to $output in ${ms}ms"
   show_cpu "$(cat $PIDFILE 2>/dev/null)" "ffmpeg stream"
+}
+
+# ─── Method 6: link-managed capture ───────────────────────
+# start stream → wait for PS176 link + valid video → settle → grab → re-check link → stop stream.
+# Results are left in M_* globals (so loop-test can use them); see capture.conf for settings.
+MANAGED_STARTED=0
+M_LINK_MS=0 M_SETTLE_MS=0 M_CAPTURE_MS=0 M_TOTAL_MS=0 M_DOWN_MS=0 M_CYCLE_MS=0
+M_RES="" M_OUT_RES="" M_RATE="" M_LANES="" M_RETRIES=0 M_HPD=0 M_ERR=""
+
+now_ms() { echo $(( $(date +%s%N) / 1000000 )); }
+
+# Stop the stream if (and only if) managed_capture started it. Returns 0 if it stopped one.
+stop_managed_stream() {
+  [ "$MANAGED_STARTED" = 1 ] || return 1
+  if is_streaming; then
+    local pid
+    pid=$(cat "$PIDFILE")
+    kill "$pid" 2>/dev/null
+    wait "$pid" 2>/dev/null
+  fi
+  rm -f "$PIDFILE"
+  MANAGED_STARTED=0
+  return 0
+}
+
+# Stop our stream (if any) and release the lock. Safe to call twice.
+managed_cleanup() {
+  stop_managed_stream
+  exec 9>&-
+}
+
+# Returns 0 if image looks like real content (not uniform/black)
+frame_ok() {
+  local img=$1 sd
+  [ -s "$img" ] || return 1
+  # -scale first: fx:standard_deviation takes ~8s on a full 1080p frame, ~0.2s at 5%
+  sd=$(convert "$img" -scale 5% -format "%[fx:standard_deviation]" info: 2>/dev/null) || return 1
+  awk -v sd="$sd" 'BEGIN { exit !(sd > 0.01) }'
+}
+
+# managed_capture <out.png> [quiet]
+managed_capture() {
+  local output=${1:-$DEFAULT_OUTPUT} quiet=${2:-}
+  local t0 t1 attempt out rc
+  local was_running=0 settle_s
+
+  M_LINK_MS=0 M_SETTLE_MS=0 M_CAPTURE_MS=0 M_TOTAL_MS=0 M_DOWN_MS=0 M_CYCLE_MS=0
+  M_RES="" M_OUT_RES="" M_RATE="" M_LANES="" M_RETRIES=0 M_HPD=0 M_ERR=""
+
+  if [ ! -e "$DEVICE" ]; then
+    M_ERR="capture device $DEVICE not found"
+    [ -z "$quiet" ] && error "$M_ERR"
+    return 1
+  fi
+
+  t0=$(now_ms)
+
+  # 0. only one capture at a time (shared with pi_server.py)
+  exec 9>"$LOCK_FILE"
+  flock 9
+
+  # 1. start stream (unless an always-on stream is already running)
+  if is_streaming; then
+    was_running=1
+  else
+    spawn_5fps_ffmpeg
+    MANAGED_STARTED=1
+  fi
+
+  settle_s=$(awk -v ms="$SETTLE_MS" 'BEGIN { printf "%.3f", ms / 1000 }')
+
+  for (( attempt = 0; attempt <= CAPTURE_RETRIES; attempt++ )); do
+    M_RETRIES=$attempt
+
+    # 2. wait for link + valid video (one HPD toggle on timeout)
+    out=$($PS176_LINK wait --timeout "$LINK_TIMEOUT" --poll-ms "$POLL_MS"); rc=$?
+    if [ $rc -ne 0 ] && [ "$M_HPD" -eq 0 ]; then
+      [ -z "$quiet" ] && warn "Link not up after ${LINK_TIMEOUT}s — toggling DP_HPD"
+      M_HPD=1
+      $PS176_LINK toggle >/dev/null
+      out=$($PS176_LINK wait --timeout "$LINK_TIMEOUT" --poll-ms "$POLL_MS"); rc=$?
+    fi
+    if [ $rc -ne 0 ]; then
+      M_ERR="link did not come up"
+      break
+    fi
+    local lm
+    read -r lm M_RATE M_LANES M_RES < <(echo "$out" | python3 -c \
+      'import sys,json; d=json.load(sys.stdin); print(d["link_ms"], d["rate_gbps"], d["lanes"], "%dx%d" % (d["width"], d["height"]))')
+    M_LINK_MS=$(( M_LINK_MS + lm ))
+
+    # 3. settle so the MS2130 has fresh frames (an already-running stream doesn't need it)
+    if [ $was_running -eq 0 ]; then
+      sleep "$settle_s"
+      M_SETTLE_MS=$(( M_SETTLE_MS + SETTLE_MS ))
+    fi
+
+    # 4. grab one frame from the loopback
+    local c0 c1 cap_ok=1
+    c0=$(now_ms)
+    ffmpeg -f v4l2 -i "$VIRT" -vframes 1 -update 1 -y "$output" \
+      -loglevel quiet 2>/dev/null 9>&- || cap_ok=0
+    c1=$(now_ms)
+    M_CAPTURE_MS=$(( c1 - c0 ))
+
+    # 5. link must still be up, otherwise the frame may be stale/partial → retry
+    if ! $PS176_LINK status >/dev/null; then
+      M_ERR="link dropped during capture"
+      [ -z "$quiet" ] && warn "$M_ERR — retrying ($((attempt + 1))/$CAPTURE_RETRIES)"
+      continue
+    fi
+
+    # 6. basic frame check
+    if [ $cap_ok -eq 0 ] || ! frame_ok "$output"; then
+      M_ERR="blank or missing frame"
+      [ -z "$quiet" ] && warn "$M_ERR — retrying ($((attempt + 1))/$CAPTURE_RETRIES)"
+      continue
+    fi
+
+    M_ERR=""
+    M_OUT_RES=$(identify -format "%wx%h" "$output" 2>/dev/null)
+    break
+  done
+
+  # 7. stop stream (only if we started it)
+  local stopped=0
+  stop_managed_stream && stopped=1
+  t1=$(now_ms)
+  M_TOTAL_MS=$(( t1 - t0 ))
+
+  # 8. wait for the link to drop so the next capture starts from a clean state.
+  #    The lock is held until then. Not needed if we left an always-on stream running.
+  if [ $stopped -eq 1 ]; then
+    out=$($PS176_LINK wait-down --timeout "$LINK_DOWN_TIMEOUT" --poll-ms "$POLL_MS"); rc=$?
+    M_DOWN_MS=$(echo "$out" | python3 -c 'import sys,json; print(json.load(sys.stdin)["down_ms"])' 2>/dev/null || echo 0)
+    [ $rc -ne 0 ] && [ -z "$quiet" ] && warn "Link still up ${LINK_DOWN_TIMEOUT}s after stream stop"
+  fi
+  M_CYCLE_MS=$(( M_TOTAL_MS + M_DOWN_MS ))
+  managed_cleanup        # releases the lock
+
+  if [ -n "$M_ERR" ]; then
+    [ -z "$quiet" ] && error "Managed capture failed: $M_ERR (${M_TOTAL_MS}ms, link down ${M_DOWN_MS}ms, retries=$M_RETRIES)"
+    return 1
+  fi
+
+  if [ -z "$quiet" ]; then
+    success "Captured to $output in ${M_TOTAL_MS}ms (ready for next capture after ${M_CYCLE_MS}ms)"
+    echo "  link ${M_LINK_MS}ms | settle ${M_SETTLE_MS}ms | capture ${M_CAPTURE_MS}ms | stop ${M_TOTAL_MS}ms total | link down ${M_DOWN_MS}ms | cycle ${M_CYCLE_MS}ms"
+    echo "  image ${M_OUT_RES} | source ${M_RES} | ${M_RATE}Gbps x${M_LANES} | retries ${M_RETRIES} | hpd_toggle ${M_HPD}"
+  fi
+  return 0
+}
+
+# `capture` command: honours CAPTURE_MODE
+capture_cmd() {
+  local output=${1:-$DEFAULT_OUTPUT}
+  case "$CAPTURE_MODE" in
+    managed)
+      trap 'managed_cleanup; exit 130' INT TERM
+      trap 'managed_cleanup' EXIT
+      managed_capture "$output" ;;
+    always-on)
+      capture_loopback "$output" ;;
+    *)
+      error "Unknown CAPTURE_MODE: $CAPTURE_MODE (valid: managed always-on)"
+      exit 1 ;;
+  esac
 }
 
 # ─── Method 5: on-demand with warmup delay ────────────────
@@ -376,6 +578,17 @@ benchmark() {
   sleep 1
   echo ""
 
+  # Managed (start stream, wait for link, capture, stop stream)
+  echo -e "${YELLOW}Method: Managed (link-aware, stream started per capture)${NC}"
+  if managed_capture "$output" quiet; then
+    echo "  Capture time: ${M_TOTAL_MS}ms total (link ${M_LINK_MS}ms, settle ${M_SETTLE_MS}ms, grab ${M_CAPTURE_MS}ms)"
+    echo "  Ready for next: ${M_CYCLE_MS}ms (link down ${M_DOWN_MS}ms after stream stop)"
+    echo "  Image:        ${M_OUT_RES} (source ${M_RES} ${M_RATE}Gbps x${M_LANES}), retries ${M_RETRIES}, hpd_toggle ${M_HPD}"
+  else
+    echo -e "  ${RED}Managed capture failed: ${M_ERR}${NC}"
+  fi
+  echo ""
+
   echo -e "${CYAN}════════════════════════════════════════${NC}"
   echo -e "${CYAN}   OCR Validation Results               ${NC}"
   echo -e "${CYAN}════════════════════════════════════════${NC}"
@@ -395,6 +608,38 @@ benchmark() {
 }
 
 
+# ─── Managed-capture stats helpers (use the caller's locals via bash dynamic scope) ──
+record_managed_stats() {
+  [ -n "$M_ERR" ] && return
+  link_n=$(( link_n + 1 ))
+  link_sum=$(( link_sum + M_LINK_MS ))
+  [ "$M_LINK_MS" -lt "$link_min" ] && link_min=$M_LINK_MS
+  [ "$M_LINK_MS" -gt "$link_max" ] && link_max=$M_LINK_MS
+  retries_sum=$(( retries_sum + M_RETRIES ))
+  hpd_sum=$(( hpd_sum + M_HPD ))
+  down_sum=$(( down_sum + M_DOWN_MS ))
+  [ "$M_DOWN_MS" -gt "$down_max" ] && down_max=$M_DOWN_MS
+  cycle_sum=$(( cycle_sum + M_CYCLE_MS ))
+}
+
+print_managed_summary() {
+  local mean=0 down_mean=0 cycle_mean=0
+  [ "$link_n" -gt 0 ] && mean=$(( link_sum / link_n )) && down_mean=$(( down_sum / link_n )) && cycle_mean=$(( cycle_sum / link_n ))
+  [ "$link_n" -eq 0 ] && link_min=0
+  echo -e "  Time to link:   min ${link_min}ms / mean ${mean}ms / max ${link_max}ms"
+  echo -e "  Link down:      mean ${down_mean}ms / max ${down_max}ms (after stream stop)"
+  echo -e "  Full cycle:     mean ${cycle_mean}ms (start of capture until ready for the next)"
+  echo -e "  Retries:        $retries_sum   HPD toggles: $hpd_sum"
+}
+
+# "timing=..." log field for the last managed_capture (empty for other methods).
+# Pass "lead" when the preceding text doesn't already end in "|".
+managed_log_field() {
+  [ "$method" = "managed" ] || return 0
+  [ "$1" = "lead" ] && echo -n "|"
+  echo -n "timing=${M_LINK_MS},${M_SETTLE_MS},${M_CAPTURE_MS},${M_TOTAL_MS},${M_DOWN_MS},${M_CYCLE_MS},${M_RES},${M_RETRIES},${M_HPD}"
+}
+
 loop_test() {
   local method=${1:-ondemand}
   local config=${2:-test_regions.conf}
@@ -405,9 +650,9 @@ loop_test() {
 
   # Validate method
   case "$method" in
-    60fps|5fps|mjpeg|nice|ondemand) ;;
+    60fps|5fps|mjpeg|nice|ondemand|managed) ;;
     *)
-      error "Unknown method: $method — valid: 60fps 5fps mjpeg nice ondemand"
+      error "Unknown method: $method — valid: 60fps 5fps mjpeg nice ondemand managed"
       exit 1 ;;
   esac
 
@@ -422,9 +667,10 @@ loop_test() {
   local total_ms=0
   local cap_errors=0
   local started_stream=0
+  local link_n=0 link_sum=0 link_min=999999 link_max=0 retries_sum=0 hpd_sum=0 down_sum=0 down_max=0 cycle_sum=0
 
   # Start loopback stream if needed
-  if [ "$method" != "ondemand" ]; then
+  if [ "$method" != "ondemand" ] && [ "$method" != "managed" ]; then
     if is_streaming; then
       warn "Using existing stream"
     else
@@ -452,12 +698,13 @@ loop_test() {
     echo -e "  Total pass:     ${GREEN}$total_pass${NC}"
     echo -e "  Total fail:     ${RED}$total_fail${NC}"
     echo -e "  Avg capture:    ${avg}ms"
+    [ "$method" = "managed" ] && print_managed_summary
     echo -e "  Log:            $log_file"
     echo -e "${CYAN}════════════════════════════════════════════════════════${NC}"
     echo ""
   }
 
-  trap 'print_summary; [ "$started_stream" -eq 1 ] && stop_stream; rm -f $output /tmp/loop_ocr.png; exit 0' INT TERM
+  trap 'managed_cleanup; print_summary; [ "$started_stream" -eq 1 ] && stop_stream; rm -f $output /tmp/loop_ocr.png; exit 0' INT TERM
 
   echo ""
   echo -e "${CYAN}════════════════════════════════════════════════════════${NC}"
@@ -482,7 +729,8 @@ loop_test() {
     echo "# Started:  $(date '+%Y-%m-%d %H:%M:%S')"
     echo "# Method:   $method"
     echo "# Config:   $config"
-    echo "# Format:   iter|timestamp|capture_ms|pass|fail|label=result[STATUS]..."
+    echo "# Format:   iter|timestamp|capture_ms|pass|fail|label=result[STATUS]...[|timing=...]"
+    [ "$method" = "managed" ] && echo "# timing:   link_ms,settle_ms,capture_ms,total_ms,down_ms,cycle_ms,res,retries,hpd_toggle (managed only)"
   } > "$log_file"
 
   while true; do
@@ -498,7 +746,9 @@ loop_test() {
     t_start=$(date +%s%N)
     cap_ok=1
 
-    if [ "$method" = "ondemand" ]; then
+    if [ "$method" = "managed" ]; then
+      managed_capture "$output" quiet || cap_ok=0
+    elif [ "$method" = "ondemand" ]; then
       ffmpeg -f v4l2 -input_format yuyv422 -video_size 1920x1080 \
         -framerate 60 -i "$DEVICE" \
         -vf "select='gte(n,60)',scale=1920:1080,format=rgb24" \
@@ -513,11 +763,12 @@ loop_test() {
     t_end=$(date +%s%N)
     cap_ms=$(( (t_end - t_start) / 1000000 ))
     total_ms=$(( total_ms + cap_ms ))
+    [ "$method" = "managed" ] && record_managed_stats
 
     if [ "$cap_ok" -eq 0 ] || [ ! -s "$output" ]; then
       cap_errors=$(( cap_errors + 1 ))
       echo -e "  [$(printf '%4d' $iter)] $ts ${RED}CAPTURE FAILED${NC} (${cap_ms}ms)"
-      echo "${iter}|${ts}|${cap_ms}|0|0|CAPTURE_FAILED" >> "$log_file"
+      echo "${iter}|${ts}|${cap_ms}|0|0|CAPTURE_FAILED$(managed_log_field lead)" >> "$log_file"
       sleep "$interval"
       [ "$max_iterations" -gt 0 ] && [ "$iter" -ge "$max_iterations" ] && break
       continue
@@ -578,8 +829,11 @@ loop_test() {
     total_pass=$(( total_pass + iter_pass ))
     total_fail=$(( total_fail + iter_fail ))
 
-    # CPU/mem of stream process
+    # CPU/mem of stream process (managed: link timings instead)
     local stream_info=""
+    if [ "$method" = "managed" ]; then
+      stream_info=" link:${M_LINK_MS}ms down:${M_DOWN_MS}ms cycle:${M_CYCLE_MS}ms retries:${M_RETRIES} hpd:${M_HPD} ${M_RES}"
+    fi
     if is_streaming; then
       local spid
       spid=$(cat "$PIDFILE" 2>/dev/null)
@@ -610,7 +864,7 @@ loop_test() {
     fi
 
     # Log
-    echo "${iter}|${ts}|${cap_ms}|${iter_pass}|${iter_fail}|${log_regions}" >> "$log_file"
+    echo "${iter}|${ts}|${cap_ms}|${iter_pass}|${iter_fail}|${log_regions}$(managed_log_field)" >> "$log_file"
 
     [ "$max_iterations" -gt 0 ] && [ "$iter" -ge "$max_iterations" ] && break
 
@@ -632,9 +886,9 @@ read_loop() {
   local log_file="loop_test_$(date +%Y%m%d_%H%M%S).log"
 
   case "$method" in
-    60fps|5fps|mjpeg|nice|ondemand) ;;
+    60fps|5fps|mjpeg|nice|ondemand|managed) ;;
     *)
-      error "Unknown method: $method — valid: 60fps 5fps mjpeg nice ondemand"
+      error "Unknown method: $method — valid: 60fps 5fps mjpeg nice ondemand managed"
       exit 1 ;;
   esac
 
@@ -647,8 +901,9 @@ read_loop() {
   local total_ms=0
   local cap_errors=0
   local started_stream=0
+  local link_n=0 link_sum=0 link_min=999999 link_max=0 retries_sum=0 hpd_sum=0 down_sum=0 down_max=0 cycle_sum=0
 
-  if [ "$method" != "ondemand" ]; then
+  if [ "$method" != "ondemand" ] && [ "$method" != "managed" ]; then
     if is_streaming; then
       warn "Using existing stream"
     else
@@ -674,12 +929,13 @@ read_loop() {
     echo -e "  Iterations:     $iter"
     echo -e "  Capture errors: $cap_errors"
     echo -e "  Avg capture:    ${avg}ms"
+    [ "$method" = "managed" ] && print_managed_summary
     echo -e "  Log:            $log_file"
     echo -e "${CYAN}════════════════════════════════════════════════════════${NC}"
     echo ""
   }
 
-  trap 'print_summary; [ "$started_stream" -eq 1 ] && stop_stream; rm -f $output /tmp/loop_ocr.png; exit 0' INT TERM
+  trap 'managed_cleanup; print_summary; [ "$started_stream" -eq 1 ] && stop_stream; rm -f $output /tmp/loop_ocr.png; exit 0' INT TERM
 
   echo ""
   echo -e "${CYAN}════════════════════════════════════════════════════════${NC}"
@@ -704,7 +960,8 @@ read_loop() {
     echo "# Started:  $(date '+%Y-%m-%d %H:%M:%S')"
     echo "# Method:   $method"
     echo "# Config:   $config"
-    echo "# Format:   iter|timestamp|capture_ms|label=value..."
+    echo "# Format:   iter|timestamp|capture_ms|label=value...[|timing=...]"
+    [ "$method" = "managed" ] && echo "# timing:   link_ms,settle_ms,capture_ms,total_ms,down_ms,cycle_ms,res,retries,hpd_toggle (managed only)"
   } > "$log_file"
 
   while true; do
@@ -718,7 +975,9 @@ read_loop() {
     t_start=$(date +%s%N)
     cap_ok=1
 
-    if [ "$method" = "ondemand" ]; then
+    if [ "$method" = "managed" ]; then
+      managed_capture "$output" quiet || cap_ok=0
+    elif [ "$method" = "ondemand" ]; then
       ffmpeg -f v4l2 -input_format yuyv422 -video_size 1920x1080 \
         -framerate 60 -i "$DEVICE" \
         -vf "select='gte(n,60)',scale=1920:1080,format=rgb24" \
@@ -733,11 +992,12 @@ read_loop() {
     t_end=$(date +%s%N)
     cap_ms=$(( (t_end - t_start) / 1000000 ))
     total_ms=$(( total_ms + cap_ms ))
+    [ "$method" = "managed" ] && record_managed_stats
 
     if [ "$cap_ok" -eq 0 ] || [ ! -s "$output" ]; then
       cap_errors=$(( cap_errors + 1 ))
       echo -e "  [$(printf '%4d' $iter)] $ts ${RED}CAPTURE FAILED${NC} (${cap_ms}ms)"
-      echo "${iter}|${ts}|${cap_ms}|CAPTURE_FAILED" >> "$log_file"
+      echo "${iter}|${ts}|${cap_ms}|CAPTURE_FAILED$(managed_log_field lead)" >> "$log_file"
       sleep "$interval"
       [ "$max_iterations" -gt 0 ] && [ "$iter" -ge "$max_iterations" ] && break
       continue
@@ -780,8 +1040,11 @@ read_loop() {
 
     done < "$config"
 
-    # CPU/mem of stream process
+    # CPU/mem of stream process (managed: link timings instead)
     local stream_info=""
+    if [ "$method" = "managed" ]; then
+      stream_info=" link:${M_LINK_MS}ms down:${M_DOWN_MS}ms cycle:${M_CYCLE_MS}ms retries:${M_RETRIES} hpd:${M_HPD} ${M_RES}"
+    fi
     if is_streaming; then
       local spid
       spid=$(cat "$PIDFILE" 2>/dev/null)
@@ -803,7 +1066,7 @@ read_loop() {
       printf "         ${CYAN}%-22s${NC} %s\n" "${r_lbl}:" "$r_val"
     done
 
-    echo "${iter}|${ts}|${cap_ms}|${log_regions}" >> "$log_file"
+    echo "${iter}|${ts}|${cap_ms}|${log_regions}$(managed_log_field)" >> "$log_file"
 
     [ "$max_iterations" -gt 0 ] && [ "$iter" -ge "$max_iterations" ] && break
 
@@ -829,6 +1092,16 @@ status() {
     warn "No stream running"
   fi
   echo ""
+  local link_line
+  link_line=$($PS176_LINK status 2>&1)
+  info "PS176 link:     $link_line"
+  if $PS176_LINK status >/dev/null 2>&1; then
+    local res
+    res=$($PS176_LINK video 2>/dev/null | python3 -c 'import sys,json; d=json.load(sys.stdin); print("%dx%d @ %sHz" % (d["h_active"], d["v_active"], d["refresh"]))' 2>/dev/null)
+    [ -n "$res" ] && info "Source video:   $res"
+  fi
+  info "Capture mode:   $CAPTURE_MODE"
+  echo ""
   show_system_mem
   echo ""
 }
@@ -846,6 +1119,11 @@ usage() {
   echo "  capture-loopback  Capture frame from stream   (fast, requires stream running)"
   echo "  stop              Stop the running stream"
   echo ""
+  echo "Link-managed capture (stream only runs during the capture; see capture.conf):"
+  echo "  capture [out.png]  Start stream, wait for PS176 link, capture, stop stream"
+  echo "                     (CAPTURE_MODE=always-on uses the running loopback stream instead)"
+  echo "  link-status        Show PS176 link state (exit 0 = up)"
+  echo ""
   echo "On-demand commands (no background process):"
   echo "  capture-ondemand  Open device, wait 2s, capture, close (zero idle CPU)"
   echo ""
@@ -854,7 +1132,7 @@ usage() {
   echo "  validate [img] [cfg]               OCR validate an existing image"
   echo "  loop-test [method] [cfg] [secs] [n] Run capture+OCR in a loop, showing pass/fail"
   echo "  read-loop [method] [cfg] [secs] [n] Run capture+OCR in a loop, printing values only"
-  echo "    method: 60fps | 5fps | mjpeg | nice | ondemand (default: ondemand)"
+  echo "    method: 60fps | 5fps | mjpeg | nice | ondemand | managed (default: ondemand)"
   echo "    secs:   interval between captures in seconds   (default: 5)"
   echo "    n:      number of iterations, 0=unlimited      (default: 0)"
   echo "  status                             Show stream status, CPU and memory"
@@ -863,6 +1141,8 @@ usage() {
   echo "  $0 start-5fps"
   echo "  $0 capture-loopback myfile.png"
   echo "  $0 capture-ondemand myfile.png"
+  echo "  $0 capture myfile.png"
+  echo "  $0 loop-test managed test_regions.conf 15 100"
   echo "  $0 benchmark test_regions.conf"
   echo "  $0 validate capture.png test_regions.conf"
   echo "  $0 loop-test ondemand test_regions.conf 5 0"
@@ -879,6 +1159,8 @@ case "$1" in
   start-nice)        start_loopback_nice ;;
   capture-loopback)  capture_loopback "${2:-$DEFAULT_OUTPUT}" ;;
   capture-ondemand)  capture_ondemand "${2:-$DEFAULT_OUTPUT}" ;;
+  capture)           capture_cmd "${2:-$DEFAULT_OUTPUT}" ;;
+  link-status)       $PS176_LINK status ;;
   stop)              stop_stream ;;
   benchmark)         benchmark "${2:-/tmp/bench_capture.png}" "${3:-test_regions.conf}" ;;
   validate)          validate "${2:-$DEFAULT_OUTPUT}" "${3:-test_regions.conf}" ;;

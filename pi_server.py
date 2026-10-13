@@ -8,8 +8,12 @@ Usage:
     python3 pi_server.py [--port 8080]
 
 Endpoints:
-    GET  /status   — stream/device status
+    GET  /status   — stream/device status and PS176 link state
     POST /ocr      — capture frame + OCR regions, return results
+
+capture_method: "managed" (default) | "loopback" | "ondemand" | "auto"
+    managed — start the loopback stream, wait for the PS176 link, capture, stop the stream
+              (settings in capture.conf; same sequence and lock as `stream.sh capture`)
 """
 
 import http.server
@@ -21,6 +25,8 @@ import sys
 import time
 from datetime import datetime, timezone
 
+import ps176_link
+
 # ─── Configuration ────────────────────────────────────────────────────────────
 HOST             = "0.0.0.0"
 PORT             = 8080
@@ -28,6 +34,8 @@ CAPTURE_DEVICE   = "/dev/video0"
 LOOPBACK_DEVICE  = "/dev/video10"
 STREAM_PID_FILE  = "/tmp/capture_stream.pid"
 CAPTURE_FILE     = "/tmp/pi_server_capture.png"
+DEFAULT_METHOD   = "managed"
+BLANK_STDDEV_MIN = 0.01     # frame check: normalised std-dev at 5% scale, below = uniform/black
 
 
 # ─── Stream detection ─────────────────────────────────────────────────────────
@@ -47,41 +55,184 @@ def is_streaming():
 
 # ─── Frame capture ────────────────────────────────────────────────────────────
 
-def capture_frame(method='auto'):
+LOOPBACK_GRAB_CMD = [
+    'ffmpeg', '-f', 'v4l2', '-i', LOOPBACK_DEVICE,
+    '-vframes', '1', '-update', '1', '-y', CAPTURE_FILE,
+    '-loglevel', 'quiet',
+]
+
+# Same ffmpeg command as `stream.sh start-5fps`
+STREAM_CMD = [
+    'ffmpeg', '-f', 'v4l2', '-input_format', 'yuyv422', '-video_size', '1920x1080',
+    '-framerate', '60', '-i', CAPTURE_DEVICE,
+    '-vf', 'scale=1920:1080,format=yuv420p', '-r', '5',
+    '-f', 'v4l2', LOOPBACK_DEVICE, '-loglevel', 'quiet',
+]
+
+
+def frame_ok(path):
+    """True if the file exists, is non-empty and is not a uniform/black image."""
+    if not os.path.exists(path) or os.path.getsize(path) == 0:
+        return False
+    # -scale first: fx:standard_deviation takes ~8s on a full 1080p frame, ~0.2s at 5%
+    r = subprocess.run(['convert', path, '-scale', '5%',
+                        '-format', '%[fx:standard_deviation]', 'info:'],
+                       capture_output=True, text=True)
+    try:
+        return r.returncode == 0 and float(r.stdout) > BLANK_STDDEV_MIN
+    except ValueError:
+        return False
+
+
+def image_size(path):
+    """Saved image size as 'WxH', or None."""
+    r = subprocess.run(['identify', '-format', '%wx%h', path], capture_output=True, text=True)
+    return r.stdout.strip() if r.returncode == 0 and r.stdout.strip() else None
+
+
+def _grab_loopback():
+    """Grab one frame from the loopback device. Returns True if ffmpeg succeeded."""
+    return subprocess.run(LOOPBACK_GRAB_CMD, capture_output=True).returncode == 0
+
+
+def _stop_stream(proc):
+    proc.terminate()
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+
+
+def capture_managed():
+    """
+    Link-managed capture (sequence from CAPTURE_ON_DEMAND.md; mirrors `stream.sh capture`):
+    start stream -> wait for PS176 link + valid video -> settle -> grab -> re-check link -> stop.
+    Caller must hold ps176_link.capture_lock().
+
+    Returns a timings dict. Raises RuntimeError on failure.
+    """
+    t = {'link_ms': 0, 'settle_ms': 0, 'capture_ms': 0, 'total_ms': 0,
+         'link_down_ms': 0, 'cycle_ms': 0, 'retries': 0,
+         'hpd_toggle_used': False, 'source_resolution': None,
+         'link_rate_gbps': None, 'lanes': None}
+    t0 = time.monotonic()
+    was_running = is_streaming()      # always-on stream: don't start/stop it, no settle needed
+    proc = None
+    err = 'capture failed'
+
+    try:
+        if not was_running:
+            if not os.path.exists(LOOPBACK_DEVICE):
+                subprocess.run(['sudo', 'modprobe', 'v4l2loopback', 'devices=1',
+                                'video_nr=10', 'card_label=capture'], capture_output=True)
+            proc = subprocess.Popen(STREAM_CMD, stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.DEVNULL)
+
+        for attempt in range(ps176_link.CAPTURE_RETRIES + 1):
+            t['retries'] = attempt
+
+            # wait for link (one HPD toggle on timeout)
+            try:
+                try:
+                    info = ps176_link.wait_for_link()
+                except ps176_link.LinkTimeout:
+                    if t['hpd_toggle_used']:
+                        raise
+                    t['hpd_toggle_used'] = True
+                    ps176_link.hpd_toggle()
+                    info = ps176_link.wait_for_link()
+            except ps176_link.LinkTimeout as e:
+                err = f'link did not come up: {e}'
+                break
+            t['link_ms'] += info['link_ms']
+            t['source_resolution'] = f"{info['width']}x{info['height']}"
+            t['link_rate_gbps'] = info['rate_gbps']
+            t['lanes'] = info['lanes']
+
+            # settle so the MS2130 has fresh frames
+            if not was_running:
+                time.sleep(ps176_link.SETTLE_MS / 1000.0)
+                t['settle_ms'] += ps176_link.SETTLE_MS
+
+            # grab
+            g0 = time.monotonic()
+            grabbed = _grab_loopback()
+            t['capture_ms'] = int((time.monotonic() - g0) * 1000)
+
+            # link must still be up, else the frame may be stale/partial
+            if ps176_link.link_dropped():
+                err = 'link dropped during capture'
+                continue
+            if not grabbed or not frame_ok(CAPTURE_FILE):
+                err = 'blank or missing frame'
+                continue
+            err = None
+            break
+    finally:
+        if proc is not None:
+            _stop_stream(proc)
+        t['total_ms'] = int((time.monotonic() - t0) * 1000)
+        # Wait for the link to drop so the next capture starts clean (lock still held).
+        # Skipped when an always-on stream was left running.
+        if proc is not None:
+            try:
+                t['link_down_ms'] = ps176_link.wait_for_link_down()
+            except ps176_link.LinkTimeout:
+                t['link_down_ms'] = int(ps176_link.LINK_DOWN_TIMEOUT * 1000)
+        t['cycle_ms'] = t['total_ms'] + t['link_down_ms']
+
+    if err:
+        raise RuntimeError(f"Managed capture failed: {err} "
+                           f"(retries={t['retries']}, {t['total_ms']}ms)")
+    return t
+
+
+def capture_frame(method=DEFAULT_METHOD):
     """
     Capture a single frame from the video pipeline.
 
-    method: 'loopback' | 'ondemand' | 'auto'
-        auto — uses loopback if the stream is running, else on-demand.
+    method: 'managed' | 'loopback' | 'ondemand' | 'auto'
+        managed  — start stream, wait for PS176 link, capture, stop stream
+        loopback — grab from an always-on stream (stream.sh start-5fps)
+        ondemand — open /dev/video0 directly (fails silently without HDMI signal)
+        auto     — loopback if an always-on stream is running, else managed
 
-    Returns (capture_file_path, elapsed_ms, method_used).
-    Raises RuntimeError on failure.
+    Holds the shared capture lock (same file as stream.sh) for the whole capture.
+
+    Returns (capture_file_path, timings_dict, method_used).
+    timings_dict keys: link_ms, settle_ms, capture_ms, total_ms, retries, hpd_toggle_used,
+    source_resolution, link_rate_gbps, lanes.  Raises RuntimeError on failure.
     """
-    if method == 'auto':
-        method = 'loopback' if is_streaming() else 'ondemand'
+    if method not in ('managed', 'loopback', 'ondemand', 'auto'):
+        raise RuntimeError(f'Unknown capture_method: {method}')
 
-    start = time.time()
+    with ps176_link.capture_lock():
+        # Checked after taking the lock so a shell capture in progress isn't mistaken
+        # for an always-on stream.
+        if method == 'auto':
+            method = 'loopback' if is_streaming() else 'managed'
 
-    if method == 'loopback':
-        cmd = [
-            'ffmpeg', '-f', 'v4l2', '-i', LOOPBACK_DEVICE,
-            '-vframes', '1', '-update', '1', '-y', CAPTURE_FILE,
-            '-loglevel', 'quiet',
-        ]
-    else:
-        # On-demand: open capture device directly, skip 60 frames for warmup
-        cmd = [
-            'ffmpeg',
-            '-f', 'v4l2', '-input_format', 'yuyv422',
-            '-video_size', '1920x1080', '-framerate', '60',
-            '-i', CAPTURE_DEVICE,
-            '-vf', "select='gte(n,60)',scale=1920:1080,format=rgb24",
-            '-vframes', '1', '-update', '1', '-y', CAPTURE_FILE,
-            '-loglevel', 'quiet',
-        ]
+        if method == 'managed':
+            return CAPTURE_FILE, capture_managed(), method
 
-    result = subprocess.run(cmd, capture_output=True)
-    elapsed_ms = int((time.time() - start) * 1000)
+        start = time.time()
+        if method == 'loopback':
+            cmd = LOOPBACK_GRAB_CMD
+        else:
+            # On-demand: open capture device directly, skip 60 frames for warmup
+            cmd = [
+                'ffmpeg',
+                '-f', 'v4l2', '-input_format', 'yuyv422',
+                '-video_size', '1920x1080', '-framerate', '60',
+                '-i', CAPTURE_DEVICE,
+                '-vf', "select='gte(n,60)',scale=1920:1080,format=rgb24",
+                '-vframes', '1', '-update', '1', '-y', CAPTURE_FILE,
+                '-loglevel', 'quiet',
+            ]
+
+        result = subprocess.run(cmd, capture_output=True)
+        elapsed_ms = int((time.time() - start) * 1000)
 
     if result.returncode != 0 or not os.path.exists(CAPTURE_FILE) or os.path.getsize(CAPTURE_FILE) == 0:
         raise RuntimeError(
@@ -89,7 +240,10 @@ def capture_frame(method='auto'):
             + result.stderr.decode(errors='replace').strip()
         )
 
-    return CAPTURE_FILE, elapsed_ms, method
+    timings = {'link_ms': 0, 'settle_ms': 0, 'capture_ms': elapsed_ms, 'total_ms': elapsed_ms,
+               'link_down_ms': 0, 'cycle_ms': elapsed_ms, 'retries': 0, 'hpd_toggle_used': False, 'source_resolution': None,
+               'link_rate_gbps': None, 'lanes': None}
+    return CAPTURE_FILE, timings, method
 
 
 # ─── OCR pipeline ─────────────────────────────────────────────────────────────
@@ -183,12 +337,20 @@ class OCRHandler(http.server.BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path == '/status':
+            link = ps176_link.read_link()       # read-only I2C; never touches /dev/video0
+            video = ps176_link.read_video(link)
             self.send_json(200, {
                 'ok':            True,
                 'streaming':     is_streaming(),
                 'device_present': os.path.exists(CAPTURE_DEVICE),
                 'capture_device': CAPTURE_DEVICE,
                 'loopback_device': LOOPBACK_DEVICE,
+                'ps176_present':  link['present'],
+                'link_up':        link['up'],
+                'source_resolution': (f"{video['h_active']}x{video['v_active']}"
+                                      if video['valid'] else None),
+                'link_rate_gbps': link['rate_gbps'] if link['up'] else None,
+                'lanes':          link['lanes'] if link['up'] else None,
             })
         else:
             self.send_json(404, {'error': 'Not found'})
@@ -212,11 +374,11 @@ class OCRHandler(http.server.BaseHTTPRequestHandler):
             self.send_json(400, {'error': 'No regions specified'})
             return
 
-        capture_method = data.get('capture_method', 'auto')
+        capture_method = data.get('capture_method', DEFAULT_METHOD)
 
         # ── Capture frame ────────────────────────────────────────────────────
         try:
-            image_path, capture_ms, method_used = capture_frame(capture_method)
+            image_path, timings, method_used = capture_frame(capture_method)
         except RuntimeError as e:
             self.send_json(500, {'success': False, 'error': str(e)})
             return
@@ -232,8 +394,17 @@ class OCRHandler(http.server.BaseHTTPRequestHandler):
 
         self.send_json(200, {
             'success':        True,
-            'capture_ms':     capture_ms,
+            'capture_ms':     timings['capture_ms'],
             'capture_method': method_used,
+            'link_ms':        timings['link_ms'],
+            'settle_ms':      timings['settle_ms'],
+            'total_ms':       timings['total_ms'],
+            'link_down_ms':   timings['link_down_ms'],
+            'cycle_ms':       timings['cycle_ms'],
+            'retries':        timings['retries'],
+            'hpd_toggle_used': timings['hpd_toggle_used'],
+            'source_resolution': timings['source_resolution'],
+            'image_resolution': image_size(image_path),
             'timestamp':      datetime.now(timezone.utc).isoformat(),
             'results':        results,
         })
@@ -258,6 +429,7 @@ def main():
     print(f"  Capture device:  {CAPTURE_DEVICE}")
     print(f"  Loopback device: {LOOPBACK_DEVICE}")
     print(f"  Stream PID file: {STREAM_PID_FILE}")
+    print(f"  Default capture: {DEFAULT_METHOD} (lock {ps176_link.LOCK_FILE}, I2C bus {ps176_link.I2C_BUS})")
     print()
 
     try:

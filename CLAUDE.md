@@ -1,6 +1,6 @@
 # Pi OCR Machine Monitor
 
-Raspberry Pi CM5 system that captures HDMI output from gaming machines via a USB capture card,
+Raspberry Pi CM5 system that captures the video output of gaming machines via an on-board capture chain,
 OCRs specific screen regions, and will report readings to a central server. One Pi per machine.
 Read `CONTEXT.md` for full background, hardware details, and open questions.
 
@@ -12,7 +12,8 @@ Read `CONTEXT.md` for full background, hardware details, and open questions.
 | --------------- | ----------------------------------------------- |
 | Board           | Custom Raspberry Pi CM5 (4GB RAM)               |
 | OS              | Raspberry Pi OS (Debian 13, aarch64)            |
-| Capture card    | Macrosilicon MS2130 HDMI→USB 3.0 → `/dev/video0` |
+| Capture chain   | PC ─DP─► PS8652 splitter ─TX0─► external monitor; ─TX1─► PS176 (DP→HDMI) ─► MS2130 (HDMI→USB3) ─► `/dev/video0` |
+| Capture card (history) | Earlier prototypes used a standalone MS2130 USB dongle (HDMI in) |
 | Virtual device  | v4l2loopback → `/dev/video10`                   |
 | Capture output  | YUYV 4:2:2, fixed 1920×1080 regardless of source |
 
@@ -25,6 +26,8 @@ Read `CONTEXT.md` for full background, hardware details, and open questions.
 | `stream.sh`         | Main tool — stream control, capture, benchmark, loop-test, validate |
 | `ocr.sh`            | Standalone OCR — reads a `.conf`, prints `label: value` per region |
 | `pi_server.py`      | HTTP server — `GET /status`, `POST /ocr` (used by Windows test tool) |
+| `ps176_link.py`     | PS176 link status over I2C (+ CLI: `status`, `video`, `wait`, `toggle`) and the shared capture lock |
+| `capture.conf`      | Capture settings shared by `stream.sh` and Python (mode, I2C bus, timeouts, settle, retries) |
 | `test_regions.conf` | Test config with expected values (for validation only)   |
 | `configs/`          | Per-machine region configs (no expected values in production) |
 | `logs/`             | Loop test logs, auto-named `loop_test_YYYYMMDD_HHMMSS.log` |
@@ -57,6 +60,49 @@ The companion Windows test app lives in `ocr-test-tool/` — see its own `CLAUDE
 python3 pi_server.py                                # listens on 0.0.0.0:8080
 python3 pi_server.py --port 9090
 ```
+
+---
+
+## Link-Managed Capture (default)
+
+`./stream.sh capture [out.png]` (and `capture_method: "managed"` in `pi_server.py`) starts the
+loopback stream only for the duration of one capture:
+
+1. take the lock (`flock` on `/tmp/capture.lock`, shared by `stream.sh` and `pi_server.py`)
+2. start the 5fps ffmpeg stream (skipped if an always-on stream is already running)
+3. poll the PS176 every 50 ms until **link up AND video valid** (timeout 15 s → one DP_HPD toggle → wait again → fail)
+4. settle `SETTLE_MS` so the MS2130 has fresh frames
+5. grab one frame from `/dev/video10`
+6. re-check the link; if it dropped, discard and retry (max `CAPTURE_RETRIES`); blank/uniform frames also retry
+7. stop the stream (trap/finally, also on Ctrl+C), release the lock
+
+It prints/returns: link, settle, capture and total ms, source resolution, link rate/lanes, retries,
+whether an HPD toggle was needed. `loop-test managed ...` logs these per iteration (`timing=` field)
+and summarises time-to-link min/mean/max. Settings live in `capture.conf` (env vars override);
+`CAPTURE_MODE=always-on` keeps the old always-running loopback behaviour.
+
+**I2C requirement:** the user needs access to `/dev/i2c-6` (`i2c` group) and `python3-smbus2`.
+Only the PS176 is read — **never touch the PS8652 over I2C from production code.**
+All PS176 registers are on bus 6, 7-bit addresses `PS176_BASE` (0x48) + page:
+
+| Page / offset | Meaning |
+| --- | --- |
+| 0x49 @0x02 | max lane count (2 on this board; 4 = PS176 just reset) |
+| 0x49 @0x20 / 0x21 | link rate (0x06/0x0A/0x14/0x1E = 1.62/2.7/5.4/8.1 Gbps) / lane count set |
+| 0x49 @0x32, 0x33 | lane status nibbles (`& 7 == 7` = locked) |
+| 0x49 @0x34 / 0x35 | bit 0: inter-lane aligned / sink in sync |
+| 0x48 @0x09,0x0D,0x0F,0x13,0x2D | h_total, h_active, v_total, v_active (16-bit LE), Mvid (24-bit LE) — stale unless link up |
+| 0x4A @0xA1 bit 7 | PS176 DP_HPD output; clear 100 ms then set to force a PS8652 retrain (recovery only) |
+
+I2C errors (`OSError`) mean the PS176 is asleep/resetting: treated as "down", never a crash.
+**Never open `/dev/video0` except through the stream ffmpeg process** — even a brief `v4l2-ctl`
+open/close toggles the MS2130's HPD and drops the link.
+
+**Measured on the CM5 (2560×1440 source, 2026-10-13):** time-to-link ≈ 2.5 s after the stream starts;
+managed capture ≈ 5–6 s total; the link stays up for a few seconds after the stream stops, so
+back-to-back captures can see link_ms ≈ 0; with `SETTLE_MS=1000` the first grab was blank every time
+(auto-retried) — 1500 ms and above gave no retries in 4/4 runs each. **Freshness (stale-frame) testing
+with changing screen content is still outstanding**, so `SETTLE_MS` default is unchanged.
 
 ---
 
@@ -147,6 +193,11 @@ Zero new dependencies (Python 3 stdlib only).
 - Production fix: disable screensaver and display power saving on all host machines
 
 ### Video Splitter / Startup Order
+> **Superseded for the custom board (pending acceptance tests):** with the PS8652 firmware `84 00 41`
+> and HPD wired PS176 → PS8652, the link is expected to retrain on every stream restart, which is
+> what managed capture relies on. This section still applies to the old dongle + external splitter
+> setup. Update it once the repeatability/asleep/TX0-monitor tests in `CAPTURE_ON_DEMAND.md` §7 pass.
+
 - If an HDMI splitter is used between the source machine and the MS2130, the splitter only
   passes signal when it detects an active downstream sink
 - **Stopping the ffmpeg stream drops the sink** — the splitter cuts its output, and the
