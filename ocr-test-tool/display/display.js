@@ -53,6 +53,12 @@ document.addEventListener('DOMContentLoaded', async () => {
   window.api.signalReady()
 })
 
+// Loop test: main process pushes new region values; re-render and confirm
+window.api.onSceneUpdate((testCase) => {
+  renderScene(testCase)
+  window.api.signalReady()
+})
+
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') window.api.closeDisplay()
 })

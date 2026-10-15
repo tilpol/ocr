@@ -344,3 +344,7 @@ body {
   animation:     spin .6s linear infinite;
   vertical-align: middle;
 }
+
+.loop-field { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 4px; }
+.loop-field input { width: 56px; padding: 4px 6px; background: transparent; color: inherit;
+  border: 1px solid var(--border, #444); border-radius: 4px; }

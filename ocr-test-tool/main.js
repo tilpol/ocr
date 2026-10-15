@@ -368,6 +368,140 @@ ipcMain.handle('run-test', async (_, testCase) => {
   }
 })
 
+// ─── IPC — loop test (random values, display stays open) ─────────────────────
+
+let loopStop = false
+
+// Replace every digit with a random one, keeping $ , . and other formatting.
+// The first digit stays non-zero so the value never gets a leading zero.
+function randomizeText(text) {
+  let first = true
+  return String(text).replace(/\d/g, () => {
+    const d = first ? 1 + Math.floor(Math.random() * 9) : Math.floor(Math.random() * 10)
+    first = false
+    return String(d)
+  })
+}
+
+function randomizeUnique(text) {
+  if (!/\d/.test(text)) return text
+  let next
+  do { next = randomizeText(text) } while (next === text)
+  return next
+}
+
+function waitDisplayReady(win, trigger) {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      ipcMain.removeListener('display-ready', onReady)
+      reject(new Error('Display window did not respond'))
+    }, 10000)
+    function onReady(event) {
+      if (event.sender === win.webContents) {
+        clearTimeout(timeout)
+        ipcMain.removeListener('display-ready', onReady)
+        resolve()
+      }
+    }
+    ipcMain.on('display-ready', onReady)
+    trigger()
+  })
+}
+
+ipcMain.handle('stop-loop', () => { loopStop = true })
+
+ipcMain.handle('run-loop', async (event, testCase, opts) => {
+  const iterations = Math.max(0, parseInt(opts?.iterations, 10) || 0)   // 0 = unlimited
+  const intervalMs = Math.max(0, (parseFloat(opts?.interval_s) || 0) * 1000)
+  const settleMs   = testCase.settle_ms ?? 1000
+  const sender     = event.sender
+
+  loopStop = false
+
+  // Log file next to the app
+  const logDir = path.join(__dirname, 'logs')
+  fs.mkdirSync(logDir, { recursive: true })
+  const stamp   = new Date().toISOString().replace(/[-:]/g, '').replace('T', '_').slice(0, 15)
+  const logFile = path.join(logDir, `loop_${stamp}.log`)
+  fs.writeFileSync(logFile,
+    `# Loop test: ${testCase.name}\n# iter|time|capture_ms|pass|fail|label=expected->got[STATUS]...\n`)
+
+  const dispWin = createDisplayWindow(testCase)
+  try {
+    await waitDisplayReady(dispWin, () => {})
+  } catch (err) {
+    dispWin.close()
+    return { success: false, error: err.message }
+  }
+
+  const ocrRegions = testCase.regions.map(r => ({
+    label:     r.label,
+    crop:      `${r.w}x${r.h}+${r.x}+${r.y}`,
+    shave:     r.shave     || '0x0',
+    whitelist: r.whitelist || '',
+    options:   r.options   || [],
+  }))
+
+  const summary = { success: true, iterations: 0, pass: 0, fail: 0, errors: 0, log: logFile, stopped: '' }
+  let current = testCase
+
+  for (let iter = 1; iterations === 0 || iter <= iterations; iter++) {
+    if (loopStop)      { summary.stopped = 'stopped by user'; break }
+    if (!displayWindow) { summary.stopped = 'display window closed'; break }
+
+    // New random values, shown on the display before every capture
+    current = {
+      ...testCase,
+      regions: testCase.regions.map(r => ({ ...r, text: randomizeUnique(r.text) })),
+    }
+    try {
+      await waitDisplayReady(dispWin, () => dispWin.webContents.send('scene-update', current))
+    } catch (err) {
+      summary.stopped = err.message
+      break
+    }
+    await sleep(settleMs)
+
+    const time = new Date().toLocaleTimeString()
+    let line
+    try {
+      const resp = await httpPost(testCase.pi_ip, testCase.pi_port, '/ocr',
+        { capture_method: 'auto', regions: ocrRegions })
+      if (!resp.results) throw new Error(resp.error || 'No results in response')
+      const results = resp.results.map(r => {
+        const expected = (current.regions.find(x => x.label === r.label) || {}).text || ''
+        return { label: r.label, expected, got: r.value, pass: r.value.trim() === expected.trim() }
+      })
+      const failed = results.filter(r => !r.pass).length
+      summary.iterations++
+      summary.pass += results.length - failed
+      summary.fail += failed
+      line = { iter, time, capture_ms: resp.capture_ms, results, error: '' }
+    } catch (err) {
+      summary.iterations++
+      summary.errors++
+      line = { iter, time, capture_ms: 0, results: [], error: err.message }
+    }
+
+    const detail = line.error
+      ? `ERROR ${line.error}`
+      : line.results.map(r => `${r.label}=${r.expected}->${r.got}[${r.pass ? 'PASS' : 'FAIL'}]`).join('|')
+    fs.appendFileSync(logFile,
+      `${iter}|${time}|${line.capture_ms}|${line.results.filter(r => r.pass).length}|` +
+      `${line.results.filter(r => !r.pass).length}|${detail}\n`)
+
+    if (!sender.isDestroyed()) sender.send('loop-progress', { ...line, summary })
+
+    if (iterations !== 0 && iter >= iterations) break
+    // Interruptible wait between iterations
+    const until = Date.now() + intervalMs
+    while (Date.now() < until && !loopStop && displayWindow) await sleep(100)
+  }
+
+  if (displayWindow) displayWindow.close()
+  return summary
+})
+
 // ─── IPC — window management ──────────────────────────────────────────────────
 
 ipcMain.handle('open-editor', (_, testCase) => {

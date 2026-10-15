@@ -11,6 +11,10 @@ const btnNew      = document.getElementById('btn-new')
 const btnEdit     = document.getElementById('btn-edit')
 const btnRun      = document.getElementById('btn-run')
 const btnCheckPi  = document.getElementById('btn-check-pi')
+const btnLoop     = document.getElementById('btn-loop')
+const btnStop     = document.getElementById('btn-stop')
+const loopCount   = document.getElementById('loop-count')
+const loopInterval = document.getElementById('loop-interval')
 const btnPreview  = document.getElementById('btn-preview')
 const piDot       = document.getElementById('pi-dot')
 const piStatusTxt = document.getElementById('pi-status-text')
@@ -150,6 +154,7 @@ function loadTestCase(tc, filePath) {
   renderPlaceholder()
   btnEdit.disabled = false
   btnRun.disabled  = false
+  btnLoop.disabled = false
   btnPreview.disabled = false
   log(`Loaded: ${tc.name || 'Untitled'}`)
   timingEl.textContent = ''
@@ -226,6 +231,70 @@ btnRun.addEventListener('click', async () => {
     btnRun.disabled = false
   }
 })
+
+// ─── Loop test ────────────────────────────────────────────────────────────────
+let loopRows = []
+
+function renderLoop(summary, done) {
+  const total = summary.pass + summary.fail
+  const rows = loopRows.slice().reverse().map(l => {
+    const cells = l.error
+      ? `<td colspan="2" class="result-value empty">${escHtml(l.error)}</td>`
+      : `<td class="result-value">${l.results.map(r =>
+          `<div>${escHtml(r.label)}: ${escHtml(r.expected)} → <span style="color:var(--${r.pass ? 'pass' : 'fail'})">${r.got ? escHtml(r.got) : '(empty)'}</span></div>`
+        ).join('')}</td>
+         <td><span class="result-badge ${l.results.every(r => r.pass) ? 'pass' : 'fail'}">${l.results.every(r => r.pass) ? 'PASS' : 'FAIL'}</span></td>`
+    return `<tr><td>${l.iter}</td><td>${escHtml(l.time)}</td><td>${l.capture_ms}ms</td>${cells}</tr>`
+  }).join('')
+  resultsArea.innerHTML = `
+    <div class="results-header"><h2>Loop test${done ? ' — finished' : ' — running'}</h2>
+      <span class="results-meta">${summary.stopped ? escHtml(summary.stopped) : ''}</span></div>
+    <div class="result-summary">
+      <span class="summary-chip ${summary.fail === 0 && summary.errors === 0 ? 'pass-all' : 'fail-any'}">
+        ${summary.pass}/${total} regions PASS</span>
+      <span class="summary-chip">${summary.iterations} iterations</span>
+      ${summary.errors ? `<span class="summary-chip fail-any">${summary.errors} errors</span>` : ''}
+    </div>
+    <div class="results-table-wrap"><table class="results-table">
+      <thead><tr><th>#</th><th>Time</th><th>Capture</th><th>Expected → Got</th><th>Result</th></tr></thead>
+      <tbody>${rows}</tbody></table></div>`
+}
+
+window.api.onLoopProgress((d) => {
+  loopRows.push(d)
+  renderLoop(d.summary, false)
+  log(`Loop ${d.iter}: ${d.summary.pass} pass / ${d.summary.fail} fail / ${d.summary.errors} errors`)
+})
+
+btnLoop.addEventListener('click', async () => {
+  if (!currentTestCase || running) return
+  running = true
+  loopRows = []
+  btnRun.disabled = btnLoop.disabled = true
+  btnStop.disabled = false
+  renderRunning()
+  log('Loop test running…')
+  try {
+    const summary = await window.api.runLoop(currentTestCase, {
+      iterations: loopCount.value, interval_s: loopInterval.value,
+    })
+    if (!summary.success) {
+      renderResults(summary)
+      log(`Loop failed: ${summary.error}`)
+    } else {
+      renderLoop(summary, true)
+      log(`Loop finished — ${summary.pass} pass / ${summary.fail} fail / ${summary.errors} errors. Log: ${summary.log}`)
+    }
+  } catch (e) {
+    log(`Unexpected error: ${e.message}`)
+  } finally {
+    running = false
+    btnRun.disabled = btnLoop.disabled = false
+    btnStop.disabled = true
+  }
+})
+
+btnStop.addEventListener('click', () => window.api.stopLoop())
 
 // ─── Editor saved callback ────────────────────────────────────────────────────
 window.api.onEditorSaved((tc) => {

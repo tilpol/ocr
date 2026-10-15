@@ -11,6 +11,9 @@ contextBridge.exposeInMainWorld('api', {
   // ── Pi communication ─────────────────────────────────────────────────────
   checkPiStatus:   (ip, port)            => ipcRenderer.invoke('check-pi-status', ip, port),
   runTest:         (testCase)            => ipcRenderer.invoke('run-test', testCase),
+  runLoop:         (testCase, opts)      => ipcRenderer.invoke('run-loop', testCase, opts),
+  stopLoop:        ()                    => ipcRenderer.invoke('stop-loop'),
+  onLoopProgress:  (cb)                  => ipcRenderer.on('loop-progress', (_, d) => cb(d)),
 
   // ── Window management ────────────────────────────────────────────────────
   openEditor:       (testCase)           => ipcRenderer.invoke('open-editor', testCase),
@@ -22,6 +25,7 @@ contextBridge.exposeInMainWorld('api', {
   getSceneData:    ()   => ipcRenderer.invoke('get-scene-data'),
   closeDisplay:    ()   => ipcRenderer.invoke('close-display'),
   signalReady:     ()   => ipcRenderer.send('display-ready'),
+  onSceneUpdate:   (cb) => ipcRenderer.on('scene-update', (_, d) => cb(d)),
 
   // ── Editor ↔ main-window sync ────────────────────────────────────────────
   onSceneData:       (cb) => ipcRenderer.on('scene-data',       (_, d) => cb(d)),

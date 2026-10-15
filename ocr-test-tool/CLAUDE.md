@@ -139,6 +139,18 @@ When a test runs or a preview is opened:
 
 ---
 
+## Loop Test (random values)
+
+**Loop (random) ▶** in the toolbar (`Loops` 0 = unlimited, `Interval` seconds) uses the
+`run-loop` IPC. The display window stays open; before each capture `main.js` replaces every
+digit in each region's `text` with a random one (format such as `$7,500.05` preserved, value
+always different from the previous one), pushes it to `display.js` via `scene-update`, waits
+`settle_ms`, POSTs `/ocr`, and compares against the value just drawn. A stale frame therefore
+fails. Progress streams to the main window (`loop-progress`); each run writes
+`logs/loop_<timestamp>.log`. **Stop ■** or Esc on the display window ends the loop.
+
+---
+
 ## Pi Server API (what this app calls)
 
 **`GET /status`**
